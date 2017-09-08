@@ -1,0 +1,30 @@
+Synonyms:
+mRNA:transcript
+five_prime_UTR:5'UTR
+three_prime_UTR:3'UTR
+Introns:
+protein_coding:gene
+processed_transcript:gene
+Vicinity:
+protein_coding:gene
+processed_transcript:gene
+Order:
+protein_coding:CDS +
+protein_coding:5'UTR +
+protein_coding:3'UTR +
+miRNA:gene
+snoRNA:gene
+snRNA:gene
+lincRNA:gene
+rRNA:gene
+misc_RNA:gene
+transcribed_processed_pseudogene:gene
+processed_pseudogene:gene
+polymorphic_pseudogene:gene
+unprocessed_pseudogene:gene
+pseudogene:gene
+protein_coding:intron
+processed_transcript:intron
+protein_coding:gene -
+protein_coding:upstream,protein_coding:downstream
+processed_transcript:upstream,processed_transcript:downstream

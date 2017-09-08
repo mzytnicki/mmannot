@@ -1,0 +1,22 @@
+Synonyms:
+mRNA:transcript
+five_prime_UTR:5'UTR
+three_prime_UTR:3'UTR
+Introns:
+TAIR10:gene
+Vicinity:
+TAIR10:gene
+Order:
+TAIR10:CDS +
+TAIR10:5'UTR +
+TAIR10:3'UTR +
+TAIR10:miRNA
+TAIR10:tRNA
+TAIR10:snoRNA
+TAIR10:snRNA
+TAIR10:rRNA
+TAIR10:transposable_element_gene
+TAIR10:pseudogenic_transcript
+TAIR10:gene -
+TAIR10:intron
+TAIR10:upstream,TAIR10:downstream

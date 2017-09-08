@@ -1,0 +1,23 @@
+Synonyms:
+mRNA:transcript
+5UTR:5'UTR
+3UTR:3'UTR
+Introns:
+FlyBase:gene
+Vicinity:
+FlyBase:gene
+Order:
+FlyBase:CDS +
+FlyBase:5'UTR +
+FlyBase:3'UTR +
+FlyBase:miRNA
+FlyBase:tRNA
+FlyBase:snoRNA
+FlyBase:snRNA
+FlyBase:rRNA
+FlyBase:ncRNA
+FlyBase:pre_miRNA
+FlyBase:pseudogene
+FlyBase:gene -
+FlyBase:intron
+FlyBase:upstream,FlyBase:downstream

@@ -1,0 +1,22 @@
+Synonyms:
+mRNA:transcript
+five_prime_UTR:5'UTR
+three_prime_UTR:3'UTR
+Introns:
+*:gene
+Vicinity:
+*:gene
+Order:
+*:CDS +
+*:5'UTR +
+*:3'UTR +
+*:miRNA
+*:tRNA
+*:snoRNA
+*:snRNA
+*:rRNA
+*:lincRNA
+*:pseudogene
+*:gene -
+*:intron
+*:upstream,*:downstream

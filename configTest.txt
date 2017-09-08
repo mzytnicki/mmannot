@@ -1,0 +1,7 @@
+Synonyms:
+mRNA:transcript
+five_prime_UTR:5'UTR
+three_prime_UTR:3'UTR
+Order:
+.:gene
+.:miRNA

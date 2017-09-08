@@ -1,0 +1,21 @@
+Synonyms:
+mRNA:transcript
+five_prime_UTR:5'UTR
+three_prime_UTR:3'UTR
+Introns:
+PomBase:gene
+Vicinity:
+PomBase:gene
+Order:
+PomBase:CDS +
+PomBase:5'UTR +
+PomBase:3'UTR +
+PomBase:tRNA_gene
+PomBase:snoRNA
+PomBase:snRNA
+PomBase:rRNA
+PomBase:pseudogene
+PomBase:gene -
+PomBase:intron
+PomBase:upstream,PomBase:downstream
+.:centromere

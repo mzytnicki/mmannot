@@ -1,0 +1,21 @@
+Synonyms:
+mRNA:transcript
+five_prime_UTR:5'UTR
+three_prime_UTR:3'UTR
+Introns:
+TAIR9:gene
+Vicinity:
+TAIR9:gene
+Order:
+TAIR9:CDS +
+TAIR9:5'UTR +
+TAIR9:3'UTR +
+TAIR9:intron
+TAIR9:miRNA
+TAIR9:tRNA
+TAIR9:snoRNA
+TAIR9:snRNA
+TAIR9:rRNA
+TAIR9:pseudogenic_transcript
+TAIR9:gene -
+TAIR9:upstream,TAIR9:downstream
