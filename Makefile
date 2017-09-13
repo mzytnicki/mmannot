@@ -1,0 +1,24 @@
+CC = g++
+CFLAGS = -Wpedantic -std=c++11 -pthread -lz
+LDFLAGS = 
+
+ifdef STATIC
+	LDFLAGS += -static
+endif
+
+ifdef DEBUG
+	CFLAGS += -O0 -g -ggdb
+else
+	CFLAGS += -O3
+endif
+
+all: addNH mmannot
+
+mmannot: mmannot.cpp
+	$(CC) mmannot.cpp $(LDFLAGS) $(CFLAGS) -o mmannot
+
+addNH: addNH.cpp
+	$(CC) addNH.cpp $(LDFLAGS) $(CFLAGS) -o addNH
+
+clean:
+	\rm -f mmannot addNH
