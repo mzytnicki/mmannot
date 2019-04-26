@@ -31,8 +31,8 @@ In case 1, we say when have *rescued* a read.
 * The bundle contains:
   * the C++ file: `mmannot.cpp`,
   * a static build (if you cannot compile it): `mmannot_static`
-  * the companion tool (see *infra*) source code and static build: `addNH.cpp` and `addNH`,
-  * several configuration files (see *infra*), used for the publication.
+  * the companion tool (see [*infra*](#add-the-nh-tag)) source code and static build: `addNH.cpp` and `addNH`,
+  * several configuration files (see [*infra*](#configuration-file)), used for the publication.
 * Compile everything with `make`.
 * You will need a C++11 compiler, and zlib.
 
@@ -48,16 +48,16 @@ Compulsory options:
 
 Main options:
 
-* `-o` *output*: output file (see infra). Default: standard output.
+* `-o` *output*: output file (see [*infra*](#output-file)). Default: standard output.
 * `-n` *name1* [*name2*] ...: short name for each of the reads files
-* `-c` *config*: configuration file (see *infra*). Defaut: `config.txt`.
+* `-c` *config*: configuration file (see [*infra*](#configuration-file)). Defaut: `config.txt`.
 * `-s` *strand*: can be:
   * for paired-end reads: `U` (unknown), `FR` (forward-reverse), `RF` (reverse-forward), `FF` (forward-forward);
   * for single-end reads: `U` (unknown), `F` (forward), `R` (reverse);
   * Default: `F`. (you can provide different strand types if the sequencing strategies differ in your samples)
 * `-u`: use this option if your reads are not sorted
-* `-f` format (`SAM` or 'BAM'): format of the read input files
-* `-l` number overlap type (see *infra*). Default: `-1`.
+* `-f` format (`SAM` or `BAM`): format of the read input files
+* `-l` number overlap type (see [*infra*](#overlap)). Default: `-1`.
 
 Configuration options:
 
@@ -70,8 +70,8 @@ Output options:
 
 * `-p`: print progress
 * `-t` *integer*: number of threads (one thread per SAM/BAM file)
-* `-m` *file*: mapping statistics of the reads (see *infra*) 
-* `-M` *file*: mapping statistics of the annotation (see *infra*)
+* `-m` *file*: mapping statistics of the reads (see [*infra*](#read-statistics)) 
+* `-M` *file*: mapping statistics of the annotation (see [*infra*](#annotation-statistics))
 * `-h`: help
 
 ### Annotation file
@@ -171,7 +171,7 @@ Notice that the order counts.  Suppose that you have a this configuration file:
       miRNA:primary_transcript
   
 If a read maps on the CDS and on the miRNA (because the reads maps at two different locations, or two annotations overlap), it will be annotated as CDS only.
-If you prefer to keep the ambiguity, put the two annotations on the same line (separated by a comma ','):
+If you prefer to keep the ambiguity, put the two annotations on the same line (separated by a comma `,`):
 
     Order:
       protein_coding:CDS, miRNA:primary_transcript
@@ -186,7 +186,7 @@ The reads can be single end or paired-end.
 This tool uses the `NH` flag, that provides the number of hits for each read.
 Most mapping tools (at least Bowtie and BWA) do not provide this flag.
 There is a companion tool, `addNH`, that add this flag __on unsorted reads only__ (i.e. right after the mapping).
-See *infra* for more about this tool.
+See [*infra*](#add-the-nh-tag) for more about this tool.
 
 You should also check how your mapping tool handles multi-mapping reads (this can usually be tuned using the appropriate parameters).
 
