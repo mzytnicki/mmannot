@@ -40,6 +40,8 @@ class Interval;
 class Read;
 class Config;
 
+static const char VERSION[] = "1.1";
+
 static const char BAM_CIGAR_LOOKUP[] = "MIDNSHP=X";
 static const char BAM_DNA_LOOKUP[] = "=ACMGRSVTWYHKDBN";
 
@@ -1902,6 +1904,10 @@ inline void printUsage () {
   cerr <<     "\t\t-h: this help" << endl;
 }
 
+inline void printVersion () {
+  cerr << "mmannot v" << VERSION << endl;
+}
+
 int main(int argc, char **argv) {
   overlap                   = -1.0;
   sorted                    = true;
@@ -2022,9 +2028,13 @@ int main(int argc, char **argv) {
       else if (s == "-u") {
         sorted = false;
       }
+      else if (s == "-v") {
+        printVersion();
+        return EXIT_SUCCESS;
+      }
       else if (s == "-h") {
         printUsage();
-        return 0;
+        return EXIT_SUCCESS;
       }
       else {
         cerr << "Error: wrong parameter '" << s << "'.\nExiting." << endl;
