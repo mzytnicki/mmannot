@@ -1878,7 +1878,7 @@ class TableCount {
 };
 
 inline void printUsage () {
-  cerr << "Usage: mmquant [options]\n";
+  cerr << "Usage: mmannot [options]\n";
   cerr <<   "\tCompulsory options:\n";
   cerr <<     "\t\t-a file: annotation file in GTF format\n";
   cerr <<     "\t\t-r file1 [file2 ...]: reads in BAM/SAM format\n";
