@@ -287,6 +287,21 @@ For instance, if you use bowtie1, you can use it this way:
 
 ## Troubleshooting
 
+### Test data set
+
+For your conveniance, test BAM and GTF files are available.
+
+The GTF file is the annotation of the Y chromosome of the human chromosome, build 38.76.
+
+The BAM file is the set of the reads available extracted from SRR5398624 (available from [GEO](https://www.ncbi.nlm.nih.gov/sra/SRR5398624/)), trimmed and mapped with [bowtie](http://bowtie-bio.sourceforge.net/index.shtml) (with option `-a --best --strata -p 6 -m 20`).
+
+You can test mmannot with
+
+    ./mmannot -a test_dataset.gtf -r test_dataset.bam -c configHS38.txt
+    
+
+### Compilation error
+
 My compiler says `cc1plus: error: unrecognized command line option ‘-std=c++11’`
 
 The code is written in C++11, like many other bioinformatics tools. C++11 offers many new functions to the developper, and it seems that your compiler is too old for C++11. Starting from 4.7, released in 2012, GCC supports the C++11 features present in mmannot. You could consider upgrading to this version at least.
