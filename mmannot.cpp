@@ -1546,6 +1546,7 @@ class IntervalList {
           if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) != unknownChromosomes.end()) return;
           for (position.chromosomeId = 0; (position.chromosomeId < chromosomes.size()) && (chromosomes[position.chromosomeId] != read.getChromosome()); position.chromosomeId++) ;
           if (position.chromosomeId == chromosomes.size()) {
+            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
             unknownChromosomes.push_back(read.getChromosome());
             position.reset();
             return;
@@ -1556,7 +1557,13 @@ class IntervalList {
       else {
 				unsigned int bin = read.getStart() / binSize;
 				auto         p   = bins.find(read.getChromosome());
-				if (p == bins.end()) return;
+				if (p == bins.end()) {
+          if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) == unknownChromosomes.end()) {
+            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
+            unknownChromosomes.push_back(read.getChromosome());
+          }
+          return;
+        }
 				bin = min<unsigned int>(bin, p->second.size()-1);
 				position.intervalId   = p->second[bin];
 				position.chromosomeId = intervals[position.intervalId].getChromosomeId();
