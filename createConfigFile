@@ -1,0 +1,255 @@
+#!/usr/bin/env python 
+
+import sys, argparse
+
+
+
+parser = argparse.ArgumentParser(description='Generate a configuration file for mmannot')
+parser.add_argument('-i', '--input',  action="store", type=str, dest="inputFileName",                                        help='Input GTF/GFF file',  required=True)
+parser.add_argument('-f', '--format', action="store", type=str, dest="fileFormat",     choices=['gff', 'gtf', "GFF", "GTF"], help='Whether the input file is GTF or GFF')
+parser.add_argument('-o', '--output', action="store", type=str, dest="outputFileName",                                       help='Output configuration file', required=True)
+parameters = parser.parse_args()
+
+if parameters.fileFormat != None:
+    fileFormat = uppercase(parameters.fileFormat)
+elif parameters.inputFileName.endswith("gtf"):
+    fileFormat = "GTF"
+elif parameters.inputFileName.endswith("gff"):
+    fileFormat = "GFF"
+elif parameters.inputFileName.endswith("gff3"):
+    fileFormat = "GTF"
+else:
+    sys.exit("Error!  Cannot infer GTF/GFF format from file name '%s'.  Please specify it with the '-f' option.\n" % (parameters.inputFileName))
+
+keyValueSeparator = " " if fileFormat == "GTF" else "="
+
+
+class Annotation (object):
+    def __init__ (self, source, type):
+        self.source       = source
+        self.type         = type
+        self.children     = []
+        self.isExon       = False if not source else "exon" in source.lower() or "exon" in type.lower()
+        self.isUtr        = False if not source else "utr" in source.lower() or "utr" in type.lower()
+        self.isCds        = False if not source else "cds" in source.lower() or "cds" in type.lower()
+        self.isVicinity   = False if not source else "stream" in source.lower() or "stream" in type.lower()
+        self.hasExon      = False
+        self.hasUtr       = False
+        self.hasCds       = False
+        self.hasVicinity  = False
+
+    def isRoot (self):
+        return self.source == None
+
+    def addChild (self, id, child = None):
+        if id not in self.children:
+            self.children.append(id)
+        if child:
+            if child.isExon:
+                self.hasExon = True
+            if child.isUtr:
+                self.hasUtr = True
+            if child.isCds:
+                self.hasCds = True
+            if child.isVicinity:
+                self.hasVicinity = True
+
+    def dump (self, offset = 0, strand = None, newline = True, string = False):
+        if self.source == None:
+            return ""
+        s = "%s%s:%s%s%s" % (' ' * offset, self.source, self.type, "" if not strand else " %s" % strand, "\n" if newline else "")
+        if string:
+            return s
+        sys.stdout.write(s)
+
+    def __repr__ (self):
+        return "%s:%s [%s]" % (self.source, self.type, ",".join(map(str, self.children)))
+
+
+class Annotations (object):
+
+    def __init__ (self):
+        root = Annotation(None, None)
+        self.annotations = [root]
+        self.ids         = {}
+
+    def findAnnotation (self, source, type):
+        for cpt, annotation in enumerate(self.annotations):
+            if annotation.source == source and annotation.type == type:
+                return cpt
+        return -1
+
+    def addAnnotation (self, source, type, id, parents):
+        childId = self.findAnnotation(source, type)
+        if childId == -1:
+            childId = len(self.annotations)
+            child = Annotation(source, type)
+            self.annotations.append(child)
+        else:
+            child = self.annotations[childId]
+        if id != None:
+            self.ids[id] = childId
+        if parents == None:
+            self.annotations[0].addChild(childId)
+        else:
+            for parentId in parents:
+                if parentId in self.ids:
+                    self.annotations[self.ids[parentId]].addChild(childId, child)
+
+    def display (self, exon = True, hasExonOnly = False, cds = True, hasCdsOnly = False, utr = True, hasUtrOnly = False, excluded = [], withStrand = False):
+        alreadySeen  = []
+        displayToId = {}
+        cpt   = 1
+        stack = [(0, 0)]
+        print "==="
+        while stack:
+            id, offset = stack.pop()
+            annotation = self.annotations[id]
+            if (not annotation.isRoot()) and (id not in excluded) and (id not in alreadySeen) and (exon or not annotation.isExon) and (not hasExonOnly or annotation.hasExon) and (cds or not annotation.isCds) and (not hasCdsOnly or annotation.hasCds) and (utr or not annotation.isUtr) and (not hasUtrOnly or annotation.hasUtr):
+                if withStrand:
+                    for strand in ('+', '-', '*'):
+                        if (id, strand) not in excluded and (id, strand) not in alreadySeen:
+                            alreadySeen.append((id, strand))
+                            displayToId[cpt] = (id, strand)
+                            sys.stdout.write("%2d " % cpt)
+                            annotation.dump(offset, strand)
+                            cpt += 1
+                else:
+                    alreadySeen.append(id)
+                    displayToId[cpt] = id
+                    sys.stdout.write("%2d " % cpt)
+                    annotation.dump(offset)
+                    cpt += 1
+            for child in reversed(annotation.children):
+                stack.append((child, offset+2))
+        return displayToId
+
+    def chooseList (self, message, exon = True, hasExonOnly = False, cds = True, hasCdsOnly = False, utr = True, hasUtrOnly = False) :
+        alreadyChosen = []
+        while True:
+            displayToId = annotations.display(exon, hasExonOnly, cds, hasCdsOnly, utr, hasUtrOnly, alreadyChosen)
+            try:
+                chosen = int(input("%s (type '0' if none): " % (message)))
+                if chosen == 0:
+                    return alreadyChosen
+                if chosen not in displayToId:
+                    print "Please type a valid number"
+                else:
+                    alreadyChosen.append(displayToId[chosen])
+                    if len(displayToId.keys()) == 1:
+                        return alreadyChosen
+            except ValueError:
+                print "Please type a valid number"
+
+    def findParent (self, childId):
+        for parentId, annotation in enumerate(self.annotations):
+            if childId in annotation.children:
+                return parentId
+        return -1
+
+    def addVicinity (self, annotationIds):
+        for annotationId in annotationIds:
+            annotation = self.annotations[annotationId]
+            parentId = self.findParent(annotationId)
+            self.addAnnotation(annotation.source, "upstream",   None, None)
+            self.annotations[parentId].addChild(len(self.annotations)-1, self.annotations[-1])
+            self.addAnnotation(annotation.source, "downstream", None, None)
+            self.annotations[parentId].addChild(len(self.annotations)-1, self.annotations[-1])
+
+    def orderList (self):
+        order         = [[]]
+        alreadyChosen = []
+        while True:
+            displayToId = annotations.display(True, False, True, False, True, False, alreadyChosen, True)
+            try:
+                chosen = int(input("Select the next item (type '0' if over): "))
+                if chosen == 0:
+                    return order
+                if chosen not in displayToId:
+                    print "Please type a valid number"
+                else:
+                    order[-1].append(displayToId[chosen])
+                    alreadyChosen.append(displayToId[chosen])
+                    if len(displayToId.keys()) == 1:
+                        return order
+                print "---"
+                print "Current state:"
+                for line in order:
+                    for id, strand in line:
+                        self.annotations[id].dump(2, strand, False)
+                    print
+                print "---"
+                while True:
+                    chosen = raw_input("Do you want to append the next annotation to the same line?  Y[es]/N[o]/Q[uit]: ").lower()
+                    if chosen not in ("y", "n", "q"):
+                        print "Please provide a valide answer: 'y', 'n' or 'q'."
+                    else:
+                        if chosen == 'n':
+                            order.append([])
+                        if chosen == 'q':
+                            return order
+                        break
+            except ValueError:
+                print "Please type a valid number"
+
+    def dump (self, id = 0, offset = 0):
+        annotation = self.annotations[id]
+        annotation.dump(offset)
+        for child in annotation.children:
+            self.dump(child, offset + 2)
+
+
+class FileParser (object):
+    def __init__ (self, fileName):
+        self.fileName = fileName
+
+    def parse (self):
+        with open(self.fileName) as inputFile:
+            for line in inputFile:
+                if line and line[0] != "#":
+                    splitLine = line.strip().split("\t", 9)
+                    if len(splitLine) != 9:
+                        sys.exit("Error!  Line '%s' has not 9 fields.\n" % (l.strip()))
+                    source  = splitLine[1]
+                    type    = splitLine[2]
+                    tags    = splitLine[8].split(";")
+                    id      = None
+                    parents = None
+                    for tag in tags:
+                        key, value = tag.strip().split(keyValueSeparator, 1)
+                        if key == "ID":
+                            id = value
+                        elif key == "Parent":
+                            parents = value.split(",")
+                    yield source, type, id, parents
+
+class FileWriter (object):
+    def __init__ (self, fileName):
+        self.fileName = fileName
+
+    def write (self, annotations, exons, vicinity, order):
+        with open(self.fileName, 'w') as outputFile:
+            outputFile.write("Synonyms:\n  mRNA:transcript\n  5UTR:5'UTR\n  five_prime_UTR:5'UTR\n  3UTR:3'UTR\n  three_prime_UTR:3'UTR\n")
+            outputFile.write("Introns:\n")
+            for annotationId in exons:
+                outputFile.write(annotations[annotationId].dump(2, None, True, True))
+            outputFile.write("Vicinity:\n")
+            for annotationId in vicinity:
+                outputFile.write(annotations[annotationId].dump(2, None, True, True))
+            outputFile.write("Order:\n")
+            for orderLine in order:
+                outputFile.write("  %s\n" % (",".join([annotations[annotationId].dump(0, None if strand == "*" else strand, False, True) for annotationId, strand in orderLine])))
+
+
+if __name__ == "__main__":
+    annotations = Annotations()
+    fileParser = FileParser(parameters.inputFileName)
+    for source, type, id, parents in fileParser.parse():
+        annotations.addAnnotation(source, type, id, parents)
+    exons    = annotations.chooseList("Choose the annotation(s) where you want to consider exons", False, True, False, False, False, False)
+    vicinity = annotations.chooseList("Choose the annotation(s) where you want to consider upstream and downstream regions", False, False, False, False, False, False)
+    annotations.addVicinity(vicinity)
+    order    = annotations.orderList()
+    fileWriter = FileWriter(parameters.outputFileName)
+    fileWriter.write(annotations.annotations, exons, vicinity, order)
+    print "Done."
