@@ -177,6 +177,19 @@ If you prefer to keep the ambiguity, put the two annotations on the same line (s
       protein_coding:CDS, miRNA:primary_transcript
 
 
+#### Configuration file maker
+
+If you have trouble creating the configuration, you can use a helper tool, `createConfigFile` (which requires Python >=2.5).
+
+Type: 
+
+    ./createConfigFile -i annotation.gtf -o config.txt
+
+where `annotation.gtf` is your annotation file, and `config.txt` is the configuration file (created by `createConfigFile`).
+
+Then, follow the instructions, that should be (hopefully) clear enough for you to create the configuration file, based on your annotation.
+
+
 ### Reads files
 
 The reads should be given in SAM or BAM format.
