@@ -6,7 +6,7 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
+*/
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -51,10 +51,11 @@ enum class Strandedness { U, F, R, FF, FR, RF };
 enum class ReadsFormat  { UNKNOWN, SAM, BAM };
 
 typedef unsigned long Position;
-typedef bool(*StrandednessFunction)(bool, bool, bool);
+typedef bool(*StrandednessFunction)(bool);
 typedef size_t(*IntervalOverlapFunction)(Interval &, Interval &);
 typedef void(*PrintReadStatsFunction)(const string &, unsigned int, vector < size_t > &);
 typedef bool(*RescueFunction)(vector < size_t > &);
+typedef vector < pair < char, int > > Cigar;
 
 const string defaultConfigFileName { "config.txt" };
 const Position UNKNOWN = numeric_limits<Position>::max();
@@ -64,27 +65,29 @@ const size_t NO_ID = numeric_limits<size_t>::max();
 const static string EMPTY_STRING { "" };
 const static Position binSize = 16384;
 
-bool sorted;
-float overlap;
-vector <Strandedness> strandednesses;
-vector <StrandednessFunction> strandednessFunctions;
-vector <ReadsFormat> formats;
-IntervalOverlapFunction intervalOverlapFunction;
-PrintReadStatsFunction printReadStatsFunction;
-RescueFunction rescueFunction;
-Config *config;
-float rescueThreshold;
-Strategy strategy;
-unsigned int upstreamSize    = 1000;
-unsigned int downstreamSize  = 1000;
-unsigned int nInputs;
-unsigned int nThreads = 1;
-mutex printMutex;
-bool progress = false;
-bool readStats = false;
-bool intervalStats = false;
-ofstream readStatsFile;
-ofstream intervalStatsFile;
+namespace Globals {
+  bool sorted;
+  float overlap;
+  Strandedness strandedness;
+  StrandednessFunction strandednessFunction;
+  ReadsFormat format;
+  IntervalOverlapFunction intervalOverlapFunction;
+  PrintReadStatsFunction printReadStatsFunction;
+  RescueFunction rescueFunction;
+  Config *config;
+  float rescueThreshold;
+  Strategy strategy;
+  unsigned int upstreamSize    = 1000;
+  unsigned int downstreamSize  = 1000;
+  unsigned int nInputs;
+  unsigned int nThreads = 1;
+  mutex printMutex;
+  bool progress = false;
+  bool readStats = false;
+  bool intervalStats = false;
+  ofstream readStatsFile;
+  ofstream intervalStatsFile;
+}
 
 
 ostream &operator<< (ostream &os, const Strand &s) {
@@ -461,23 +464,23 @@ class Config {
 
 void printReadStats (const string &name, unsigned int nHits, vector < size_t > &regions) {
   sort(regions.begin(), regions.end());
-  readStatsFile << name << " \t" << nHits;
-  size_t c = 0, cr = config->getNElements();
+  Globals::readStatsFile << name << " \t" << nHits;
+  size_t c = 0, cr = Globals::config->getNElements();
   for (size_t r: regions) {
     if (cr == r) {
       ++c;
     }
     else {
-      if (cr != config->getNElements()) {
-        readStatsFile << "\t" << config->getName(cr) << ": " << c;
+      if (cr != Globals::config->getNElements()) {
+        Globals::readStatsFile << "\t" << Globals::config->getName(cr) << ": " << c;
       }
       cr = r;
       c  = 1;
     }
   }
-  if (cr != config->getNElements()) readStatsFile << "\t" << config->getName(cr) << ": " << c;
-  if (rescueFunction(regions)) readStatsFile << "\tRescued";
-  readStatsFile << "\n";
+  if (cr != Globals::config->getNElements()) Globals::readStatsFile << "\t" << Globals::config->getName(cr) << ": " << c;
+  if (Globals::rescueFunction(regions)) Globals::readStatsFile << "\tRescued";
+  Globals::readStatsFile << "\n";
 }
 
 void printReadStatsVoid (const string &name, unsigned int nHits, vector < size_t > &regions) {}
@@ -485,8 +488,8 @@ void printReadStatsVoid (const string &name, unsigned int nHits, vector < size_t
 bool rescue (vector < size_t > &regions) {
   size_t n = regions.size();
   if (n == 1) return false;
-  size_t t = ceil(n * rescueThreshold);
-  vector < size_t > c(config->getNElements(), 0);
+  size_t t = ceil(n * Globals::rescueThreshold);
+  vector < size_t > c(Globals::config->getNElements(), 0);
   for (size_t r: regions) {
     if (++c[r] >= t) {
       regions = { r };
@@ -557,7 +560,7 @@ class GtfLineParser {
     string          &getSource ()                { return source; }
     string          &getType ()                  { return type; }
     string          &getChromosome ()            { return chromosome; }
-    Strand         getStrand ()                { return strand; }
+    Strand           getStrand ()                { return strand; }
     Position         getStart ()                 { return start; }
     Position         getEnd ()                   { return end; }
     bool             hasTag (const string &s)    { return (tags.find(s) != tags.end()); }
@@ -567,54 +570,797 @@ class GtfLineParser {
     void             setType (const string &t)   { type   = t; }
 };
 
+
+typedef struct {
+  string chromosome;
+  bool strand;
+  Position start;
+  Cigar cigar;
+} AlternativeHit;
+
+typedef vector < AlternativeHit > AlternativeHits;
+
+
 class XamRecord {
   protected:
     string name, chromosome;
     Position start;
     unsigned int flags, nHits;
-    vector <pair <char, int>> cigar;
+    AlternativeHits alternativeHits;
+    Cigar cigar;
     size_t size;
     bool over;
 
   public:
     XamRecord (): start(UNKNOWN), nHits(1), over(false) { }
+    void clear () {
+      cigar.clear();
+      alternativeHits.clear();
+    }
     void setChromosome (const string &c) { chromosome = c; }
     void setStart (Position s) { start = s; }
-    void setName (const string &n) {
-      name = n;
-      if (isPaired()) {
-        size_t pos = name.rfind('_');
-        if ((pos != string::npos) && (pos < name.size()-1) && ((name[pos+1] == '1') || (name[pos+1] == '2'))) {
-          name.resize(pos);
-        }
-      }
-    }
+    void setName (const string &n) { name = n; }
     void setSize (size_t s) { size = s; }
     void setFlags (unsigned int f) { flags = f; }
-    void setCigar (const vector < pair < char, int > > &g) { cigar = g; }
+    void setCigar (const Cigar &g) { cigar = g; }
     void setNHits (unsigned int n) { nHits = n; }
+    void setAlternativeHits (const AlternativeHits &a) { alternativeHits = a; }
     string &getChromosome() { return chromosome; }
     Position getStart() { return start; }
     string &getName () { return name; }
-    vector <pair <char, int>> &getCigar () { return cigar; }
+    Cigar &getCigar () { return cigar; }
     size_t getSize () const { return size; }
+    AlternativeHits &getAlternativeHits () { return alternativeHits; }
     bool isMapped () const { return ((flags & 0x4) == 0);}
-    bool isProperlyMapped () const { return ((flags & 0x2) == 0x2);}
     bool getStrand () const { return ((flags & 0x10) == 0);}
-    bool isPaired () const { return ((flags & 0x1) == 0x1);}
-    bool isFirst () const { return ((flags & 0x40) == 0x40);}
     bool isOver () const { return over; }
     void setOver () { over = true; }
     unsigned int getNHits () const { return nHits; }
 };
 
+
+class Interval {
+  protected:
+    Position start, end;
+  public:
+    Interval (): start(UNKNOWN), end(UNKNOWN) {}
+    Interval (Position s): start(s) { }
+    Interval (Position s, Position e): start(s), end(e) { }
+    Interval (GtfLineParser &line): Interval(line.getStart(), line.getEnd()) {}
+    Position getStart () const     { return start; }
+    Position getEnd   () const     { return end; }
+    void     setStart (Position p) { start  = p; }
+    void     setEnd   (Position p) { end    = p; }
+    void     unSet    ()           { start = end = UNKNOWN; }
+    bool isSet () const {
+      return ((start != UNKNOWN) && (end != UNKNOWN));
+    }
+    Position getSize () const {
+      return (end - start + 1);
+    }
+    size_t overlaps (const Interval &i) const {
+      Position s = max<Position>(start, i.start), e = min<Position>(end, i.end);
+      if (s >= e) return 0;
+      return e - s;
+    }
+    bool includes (const Interval &i) const {
+      return ((i.start >= start) && (i.end <= end));
+    }
+    bool isIncluded (const Interval &i) const {
+      return i.includes(*this);
+    }
+    bool isBefore (const Interval &i) const {
+      return (end < i.start);
+    }
+    bool isAfter (const Interval &i) const {
+      return (i.isBefore(*this));
+    }
+    void merge (const Interval &i) {
+      start = min<Position>(start, i.start);
+      end   = max<Position>(end,   i.end);
+    }
+    void intersect (Interval &i) {
+      if (! isSet()) return;
+      start = max<Position>(start, i.start);
+      end   = min<Position>(end,   i.end);
+      if (start > end) {
+        start = end = UNKNOWN;
+      }
+    }
+    size_t getDistance (Position p) {
+      if (p < start) return (start - p);
+      if (p > end  ) return (p - end);
+      return 0;
+    }
+    friend bool operator<(const Interval &i1, const Interval &i2) {
+      return (i1.start < i2.start);
+    }
+};
+
+ostream &operator<< (ostream &os, const Interval &i) {
+  os << i.getStart() << "-" << i.getEnd();
+  return os;
+}
+
+
+class PlacedElement {
+  protected:
+    Strand strand;
+    unsigned int chromosomeId;
+  public:
+    PlacedElement (Strand st = Strand::ALL, unsigned int c = NO_CHR): strand(st), chromosomeId(c) { }
+    unsigned int getChromosomeId () const { return chromosomeId; }
+    Strand       getStrand ()       const { return strand; }
+};
+
+
+class TypedInterval: public Interval, public PlacedElement {
+  protected:
+    size_t type;
+    string id;
+  public:
+    TypedInterval (Position s = UNKNOWN, Position e = UNKNOWN, size_t t = NO_ID, Strand st = Strand::ALL, unsigned int c = NO_CHR, const string &i = EMPTY_STRING): Interval(s, e), PlacedElement(st, c), type(t), id(i) { }
+    TypedInterval (Interval &i, size_t t, Strand st, unsigned int c, const string &n = EMPTY_STRING): Interval(i), PlacedElement(st, c), type(t), id(n) { }
+    size_t getType () const { return type; }
+    string &getId () { return id; }
+    friend bool operator<(const TypedInterval &i1, const TypedInterval &i2) {
+      return ((i1.chromosomeId < i2.chromosomeId) || ((i1.chromosomeId == i2.chromosomeId) && (i1.start < i2.start)));
+    }
+};
+
+ostream &operator<< (ostream &os, const TypedInterval &ti) {
+  os << ti.getChromosomeId() << ":" << ti.getStart() << "-" << ti.getEnd() << " (" << Globals::config->getName(ti.getType()) << ")";
+  return os;
+}
+
+
+class Transcript: public Interval {
+  protected:
+    vector <Interval> exons;
+    vector <Interval> introns;
+  public:
+    Transcript (Position s = UNKNOWN, Position e = UNKNOWN): Interval(s, e) {}
+    Transcript (Interval e): Interval(e) {}
+    Transcript (vector < Interval > &i) {
+      for (Interval &e: i) addExon(e);
+    }
+    Transcript (GtfLineParser &line): Transcript(line.getStart(), line.getEnd()) {}
+    void addExon (const Interval &e) {
+      this->Interval::merge(e);
+      exons.push_back(e);
+      vector < Interval > newExons;
+      sort(exons.begin(), exons.end());
+      Interval currentExon;
+      for (Interval &exon: exons) {
+        if (! currentExon.isSet()) {
+          currentExon = exon;
+        }
+        else if (currentExon.isBefore(exon)) {
+          newExons.push_back(currentExon);
+          currentExon = exon;
+        }
+        else {
+          currentExon.merge(exon);
+        }
+      }
+      newExons.push_back(currentExon);
+      exons = newExons;
+    }
+    void addExon (Position s, Position e) {
+      addExon(Interval(s, e));
+    }
+    void checkStructure () {
+      sort(exons.begin(), exons.end());
+      if (exons.empty()) exons.push_back(*this);
+      Position start = UNKNOWN;
+      for (Interval &exon: exons) {
+        if (start != UNKNOWN) introns.push_back(Interval(start, exon.getStart()-1));
+        start = exon.getEnd()+1;
+      }
+    }
+    size_t overlaps (Interval &i) {
+      if (Interval::overlaps(i) == 0) return 0;
+      size_t o = 0;
+      for (Interval &exon: exons) {
+        o += exon.overlaps(i);
+      }
+      return o;
+    }
+    size_t overlaps (Transcript &t) {
+      if (Interval::overlaps(t) == 0) return 0;
+      size_t o = 0;
+      for (Interval &i1: exons) {
+        for (Interval &i2: t.exons) {
+          o += i1.overlaps(i2);
+        }
+      }
+      return o;
+    }
+    bool includes (Interval &i) {
+      if (! Interval::includes(i)) return false;
+      for (Interval &exon: exons) {
+        if (exon.includes(i)) return true;
+      }
+      return false;
+    }
+    bool includes (Transcript &t) {
+      if (! Interval::includes(t)) return false;
+      for (Interval &e2: t.exons) {
+        if (! any_of(exons.begin(), exons.end(), [&e2](Interval &e1){return e1.includes(e2);})) return false;
+      }
+      return true;
+    }
+    bool isIncluded (Transcript &t) {
+      return t.isIncluded(*this);
+    }
+    void intersect (Interval &i) {
+      introns.clear();
+      vector <Interval> newExons;
+      for (Interval &exon: exons) {
+        exon.intersect(i);
+        if (exon.isSet()) {
+          newExons.push_back(exon);
+        }
+      }
+      exons = newExons;
+      if (exons.empty()) {
+        start = end = UNKNOWN;
+        return;
+      }
+      start = exons.front().getStart();
+      end   = exons.back().getEnd();
+    }
+    void merge (Interval &e) {
+      vector < Interval > newExons;
+      for (Interval &thisExon: exons) {
+        if (thisExon.overlaps(e)) {
+          e.merge(thisExon);
+        }
+        else {
+          newExons.push_back(thisExon);
+        }
+      }
+      newExons.push_back(e);
+      exons = newExons;
+    }
+    void merge (Transcript &t) {
+      for (Interval &exon: t.getExons()) {
+        merge(exon);
+      }
+    }
+    vector <Interval> &getExons () {
+      return exons;
+    }
+    vector <Interval> &getIntrons () {
+      return introns;
+    }
+    friend ostream &operator<< (ostream &os, const Transcript &t);
+};
+
+ostream &operator<< (ostream &os, const Transcript &t) {
+  for (const Interval &exon: t.exons) os << exon << " ";
+  return os;
+}
+
+inline bool strandF (bool strand) {
+  return strand;
+}
+inline bool strandR (bool strand) {
+  return ! strand;
+}
+inline bool strandU (bool strand) {
+  return true;
+}
+
+class Read: public Interval {
+  protected:
+    string name, chromosome;
+    bool strand;
+    unsigned int nHits;
+    AlternativeHits alternativeHits;
+    void parseCigar (Cigar &cigar) {
+      for (auto &part: cigar) {
+        char c = part.first;
+        int  v = part.second;
+        switch (c) {
+          case 'M':
+          case 'D':
+          case '=':
+          case 'X':
+            end += v;
+            break;
+          case 'I':
+          case 'S':
+          case 'H':
+          case 'P':
+            break;
+          default:
+            cerr << "Problem in the cigar: do not understand char " << c << endl;
+        }
+      }
+      --end;
+    }
+  public:
+    void reset (XamRecord &record) {
+      start           = record.getStart();
+      end             = record.getStart();
+      name            = record.getName();
+      chromosome      = record.getChromosome();
+      nHits           = record.getNHits();
+      alternativeHits = record.getAlternativeHits();
+      strand          = Globals::strandednessFunction(record.getStrand());
+      parseCigar(record.getCigar());
+      if (! alternativeHits.empty()) {
+        nHits = alternativeHits.size();
+      }
+    }
+    Read () {}
+    Read (XamRecord &record) {
+      reset(record);
+    }
+    void setNextAlternativeHit (AlternativeHit &alternativeHit) {
+      chromosome = alternativeHit.chromosome;
+      strand     = Globals::strandednessFunction(alternativeHit.strand);
+      start      = alternativeHit.start;
+      parseCigar(alternativeHit.cigar);
+    }
+    string &getName () { return name; }
+    bool getStrand() { return strand; }
+    string &getChromosome() { return chromosome; }
+    unsigned int getNHits () { return nHits; }
+    size_t getSize () { return end - start + 1; }
+    friend ostream &operator<< (ostream &os, const Read &r);
+};
+
+ostream &operator<< (ostream &os, const Read &r) {
+  os << r.chromosome << ":" << static_cast<const Transcript &>(r);
+  return os;
+}
+
+
+class Gene: public Interval, public PlacedElement {
+  protected:
+    string id, source, type;
+    Transcript mergedTranscript, cds, utr5, utr3;
+    Interval upstream, downstream;
+  public:
+    Gene (const string &i, const string &s, const string &t, Position st, Position en, Strand str, unsigned int ci): Interval(st, en), PlacedElement(str, ci), id(i), source(s), type(t), mergedTranscript(st, en) { }
+    Gene (GtfLineParser &line, unsigned int c): Gene(line.hasTag("gene_id")? line.getTag("gene_id").front(): (line.hasTag("ID")? line.getTag("ID").front(): rtrimTo(line.getTag("Parent").front(), '.')), line.getSource(), line.getType(), line.getStart(), line.getEnd(), line.getStrand(), c) { }
+    string &getId ()     { return id; }
+    string &getSource () { return source; }
+    string &getType ()   { return type; }
+    void addExon (Interval &e) {
+      Interval::merge(e);
+      mergedTranscript.addExon(e);
+    }
+    void addCds (Interval &c) {
+      addExon(c);
+      if (cds.isSet()) cds.Interval::merge(c);
+      else             cds = c;
+    }
+    void setCds () {
+      if (! cds.isSet()) return;
+      Interval intervalCds = cds;
+      cds = mergedTranscript;
+      cds.intersect(intervalCds);
+    }
+    void setUtr () {
+      if (! cds.isSet()) return;
+      Interval i5(start, cds.getStart()-1), i3(cds.getEnd()+1, end);
+      utr5 = utr3 = mergedTranscript;
+      utr5.intersect(i5);
+      utr3.intersect(i3);
+      if (strand == Strand::R) swap(utr5, utr3);
+    }
+    void setUpDownStream () {
+      if (strand == Strand::F) {
+        upstream   = Interval(((getStart() <= Globals::upstreamSize)? 1: getStart()-Globals::upstreamSize), getStart()-1);
+        downstream = Interval(getEnd()+1, getEnd()+Globals::downstreamSize);
+      }
+      else {
+        downstream = Interval(((getStart() <= Globals::downstreamSize)? 1: getStart()-Globals::downstreamSize), getStart()-1);
+        upstream   = Interval(getEnd()+1, getEnd()+Globals::upstreamSize);
+      }
+    }
+    void checkStructure () {
+      mergedTranscript.checkStructure();
+      start = mergedTranscript.getStart();
+      end   = mergedTranscript.getEnd();
+      setCds();
+      setUtr();
+      setUpDownStream();
+    }
+    size_t overlaps (Read &read) {
+      return mergedTranscript.overlaps(read);
+    }
+    bool includes (Read &read) {
+      return (mergedTranscript.includes(read));
+    }
+    Transcript &getMergedTranscript () {
+      return mergedTranscript;
+    }
+    Transcript &getCds () {
+      return cds;
+    }
+    Transcript &getUtr5 () {
+      return utr5;
+    }
+    Transcript &getUtr3 () {
+      return utr3;
+    }
+    Interval &getUpstream () {
+      return upstream;
+    }
+    Interval &getDownstream () {
+      return downstream;
+    }
+    friend bool operator<(const Gene &g1, const Gene &g2) {
+      return ((g1.chromosomeId < g2.chromosomeId) || ((g1.chromosomeId == g2.chromosomeId) && (g1.start < g2.start)));
+    }
+};
+
+inline size_t intervalInclusion (Interval &i, Interval &r) {
+  return (i.includes(r))? 1: 0;
+}
+inline size_t intervalOverlapPc (Interval &i, Interval &r) {
+  size_t o = i.overlaps(r);
+  return (r.getSize() * Globals::overlap <= o)? o: 0;
+}
+inline size_t intervalOverlap (Interval &i, Interval &r) {
+  size_t o = i.overlaps(r);
+  return (o >= Globals::overlap)? o: 0;
+}
+
+struct IntervalListPosition {
+  size_t chromosomeId, intervalId;
+  IntervalListPosition (): chromosomeId(0), intervalId(0) {}
+  void reset () {
+    chromosomeId = intervalId = 0;
+  }
+};
+
+class EvaluationStructure {
+  protected:
+    vector < pair < size_t, size_t > > evaluation;
+    vector < vector < size_t > > ids;
+    unsigned int nHits;
+  public:
+    EvaluationStructure (Read &r): evaluation(vector<pair<size_t, size_t>>(Globals::config->getNElements())), ids(Globals::config->getNElements()), nHits(0) {
+      for (size_t i = 0; i < Globals::config->getNElements(); ++i) {
+        evaluation[i] = {0, 0};
+      }
+    }
+    void set (size_t id, size_t type, size_t overlap, size_t distance) {
+      ids[type].push_back(id);
+      evaluation[type].first  = overlap;
+      evaluation[type].second = distance;
+      ++nHits;
+    }
+    void getFirst (vector <size_t> &regions) {
+      if (nHits == 0) return;
+      size_t goodId = NO_ID;
+      RegionType regionType;
+      vector < size_t > selected;
+      size_t maxOverlap = 0;
+      for (size_t i = 0; i < evaluation.size(); ++i) {
+        regionType = Globals::config->getElement(i);
+        if ((goodId != NO_ID) && (regionType.id != goodId)) {
+          break;
+        }
+        bool presentInAll = true;
+        size_t overlap = 0;
+        if (evaluation[i].first > 0) {
+          overlap = evaluation[i].first;
+          goodId = regionType.id;
+        }
+        else {
+          presentInAll = false;
+        }
+        if (overlap > 0) {
+          if (overlap > maxOverlap) {
+            selected   = { i };
+            maxOverlap = overlap;
+          }
+          else if (overlap == maxOverlap) {
+            selected.push_back(i);
+          }
+        }
+      }
+      if (selected.empty()) {
+        return;
+      }
+      if (selected.size() == 1) {
+        regions = selected;
+        return;
+      }
+      size_t minDistance = numeric_limits<size_t>::max();
+      for (size_t i: selected) {
+        if (evaluation[i].second < minDistance) {
+          minDistance = evaluation[i].second;
+          regions = { i };
+        }
+        else if (evaluation[i].second == minDistance) {
+          regions.push_back(i);
+        }
+      }
+    }
+    void getIds (vector <size_t> &regions, vector <size_t> &intervals) {
+      for (size_t r: regions) {
+        intervals.insert(intervals.end(), ids[r].begin(), ids[r].end());
+      }
+    }
+};
+
+class IntervalList {
+  protected:
+    vector <string>                         chromosomes;
+    vector <string>                         unknownChromosomes;
+    vector <TypedInterval>                  intervals;
+    vector <unsigned int>                   chrStarts;
+		unordered_map <string, vector <size_t>> bins;
+
+
+  public:
+    IntervalList(string &fileName) {
+      ifstream file (fileName.c_str());
+      unordered_map < string, unsigned int> geneHash;
+      unordered_set < string > unused;
+      vector < Gene > genes;
+      string line, chromosome;
+      unsigned long cpt;
+      unsigned int chromosomeId = numeric_limits<unsigned int>::max();
+      cerr << "Reading GTF file" << endl;
+      for (cpt = 0; getline(file, line); cpt++) {
+        if ((! line.empty()) && (line[0] != '#')) {
+          GtfLineParser parsedLine(line);
+          parsedLine.setSource(Globals::config->translate(parsedLine.getSource()));
+          parsedLine.setType(Globals::config->translate(parsedLine.getType()));
+          if (parsedLine.getChromosome() != chromosome) {
+            geneHash.clear();
+            unused.clear();
+            chromosome = parsedLine.getChromosome();
+            bool seen = false;
+            for (unsigned int i = 0; (i < chromosomes.size()) && (! seen); i++) {
+              if (chromosomes[i] == chromosome) {
+                chromosomeId = i;
+                seen         = true;
+              }
+            }
+            if (! seen) {
+              chromosomeId = chromosomes.size();
+              chromosomes.push_back(chromosome);
+            }
+          }
+          if (parsedLine.getType() == "gene") {
+            string geneId;
+            if      (parsedLine.hasTag("ID"))      geneId = parsedLine.getTag("ID").front();
+            else if (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
+            else {
+              cerr << "Warning, cannot deduce gene id at line " << cpt << ": '" << line << "'." << endl;
+            }
+            Gene gene(parsedLine, chromosomeId);
+            geneHash[geneId] = genes.size();
+            genes.push_back(gene);
+          }
+          else if (parsedLine.getType() == "transcript") {
+            string id, geneId;
+            if      (parsedLine.hasTag("ID"))            id = parsedLine.getTag("ID").front();
+            else if (parsedLine.hasTag("transcript_id")) id = parsedLine.getTag("transcript_id").front();
+            else {
+              cerr << "Warning, cannot deduce transcript id at line " << cpt << ": '" << line << "'." << endl;
+            }
+            if      (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
+            else if (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
+            else {
+              cerr << "Warning, cannot deduce transcript parent id at line " << cpt << ": '" << line << "'." << endl;
+            }
+            if ((unused.find(geneId) == unused.end()) && (geneHash.find(geneId) != geneHash.end())) {
+              geneHash[id] = geneHash[geneId];
+            }
+          }
+          else if (parsedLine.getType() == "exon") {
+            string geneId;
+            if      (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
+            else if (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
+            else {
+              cerr << "Warning, cannot deduce exon id at line " << cpt << ": '" << line << "'." << endl;
+            }
+            if (unused.find(geneId) == unused.end()) {
+              auto pos = geneHash.find(geneId);
+              Interval e(parsedLine);
+              if (pos == geneHash.end()) {
+                Gene gene(parsedLine, chromosomeId);
+                gene.addExon(e);
+                geneHash[geneId] = genes.size();
+                genes.push_back(gene);
+              }
+              else {
+                genes[pos->second].addExon(e);
+              }
+            }
+          }
+          else if (parsedLine.getType() == "CDS") {
+            string geneId;
+            if      (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
+            else if (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
+            else {
+              cerr << "Warning, cannot deduce CDS parent id at line " << cpt << ": '" << line << "'." << endl;
+            }
+            auto pos = geneHash.find(geneId);
+            Interval e(parsedLine);
+            if (pos == geneHash.end()) {
+              Gene gene(parsedLine, chromosomeId);
+              gene.addCds(e);
+              geneHash[geneId] = genes.size();
+              genes.push_back(gene);
+            }
+            else {
+              genes[pos->second].addCds(e);
+            }
+          }
+          else if (parsedLine.getType() == "5'UTR") {
+            // skip this
+          }
+          else if (parsedLine.getType() == "3'UTR") {
+            // skip this
+          }
+          else if (Globals::config->getOrder(parsedLine.getSource(), parsedLine.getType(), parsedLine.getStrand()) != NO_ID) {
+            string id;
+            if      (parsedLine.hasTag("ID"))      id = parsedLine.getTag("ID").front();
+            else if (parsedLine.hasTag("gene_id")) id = parsedLine.getTag("gene_id").front();
+            else {
+              if (parsedLine.hasTag("Parent")) id = parsedLine.getTag("Parent").front() + "_" + parsedLine.getType();
+              else {
+                cerr << "Warning, cannot deduce id at line " << cpt << ": '" << line << "'." << endl;
+              }
+            }
+            geneHash[id] = genes.size();
+            genes.push_back(Gene(parsedLine, chromosomeId));
+          }
+          else {
+            if (parsedLine.hasTag("gene_id"))       unused.insert(parsedLine.getTag("gene_id").front());
+            if (parsedLine.hasTag("transcript_id")) unused.insert(parsedLine.getTag("transcript_id").front());
+            if (parsedLine.hasTag("ID"))            unused.insert(parsedLine.getTag("ID").front());
+
+          }
+        }
+        if (Globals::progress && (cpt % 100000 == 0)) cerr << "\t" << cpt << " lines read.\r" << flush;
+      }
+      cerr << "\t" << cpt << " lines read, done.  " << genes.size() << " genes found." << endl;
+      for (Gene &gene: genes) {
+        string      &source       = gene.getSource();
+        string      &type         = gene.getType();
+        Strand       strand       = gene.getStrand();
+        unsigned int chromosomeId = gene.getChromosomeId();
+        size_t       regionType;
+        //cerr << "\t\tGene: " << gene.getSource() << ":" << gene.getType() << endl;
+        gene.checkStructure();
+        if ((regionType = Globals::config->getOrder(source, "CDS", strand)) != NO_ID) {
+          for (Interval &exon: gene.getCds().getExons()) {
+            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId() + "-CDS"));
+          }
+        }
+        if ((regionType = Globals::config->getOrder(source, "5'UTR", strand)) != NO_ID) {
+          for (Interval &exon: gene.getUtr5().getExons()) {
+            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId() + "-5UTR"));
+          }
+        }
+        if ((regionType = Globals::config->getOrder(source, "3'UTR", strand)) != NO_ID) {
+          for (Interval &exon: gene.getUtr3().getExons()) {
+            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId() + "-3UTR"));
+          }
+        }
+        if ((regionType = Globals::config->checkIntrons(source, type)) != NO_ID) {
+          for (Interval &intron: gene.getMergedTranscript().getIntrons()) {
+            intervals.push_back(TypedInterval(intron, regionType, strand, chromosomeId, gene.getId() + "-intron"));
+          }
+        }
+        if ((regionType = Globals::config->checkUpstream(source, type)) != NO_ID) {
+          intervals.push_back(TypedInterval(gene.getUpstream(), regionType, strand, chromosomeId, gene.getId() + "-upstream"));
+        }
+        if ((regionType = Globals::config->checkDownstream(source, type)) != NO_ID) {
+          intervals.push_back(TypedInterval(gene.getDownstream(), regionType, strand, chromosomeId, gene.getId() + "-downstream"));
+        }
+        if ((regionType = Globals::config->getOrder(source, type, strand)) != NO_ID) {
+          for (Interval &exon: gene.getMergedTranscript().getExons()) {
+            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId()));
+          }
+        }
+      }
+      sort(intervals.begin(), intervals.end());
+      chrStarts = vector<unsigned int>(chromosomes.size());
+      chromosomeId = numeric_limits<unsigned int>::max();
+      for (unsigned int i = 0; i < intervals.size(); i++) {
+        //cerr << "\t" << intervals[i] << endl;
+        if (intervals[i].getChromosomeId() != chromosomeId) {
+          chrStarts[chromosomeId = intervals[i].getChromosomeId()] = i;
+        }
+      }
+			if (! Globals::sorted) {
+				//cerr << "Not all sorted" << endl;
+				for (unsigned int i = 0; i < intervals.size(); i++) {
+					vector<size_t> &chrBins    = bins[chromosomes[intervals[i].getChromosomeId()]];
+					unsigned        bin        = intervals[i].getEnd() / binSize;
+					if (chrBins.size() <= bin) {
+						//cerr << "Adding " << chrBins.size() << "-" << bin << ": " << i << endl;
+						chrBins.insert(chrBins.end(), bin-chrBins.size()+1, i);
+					}
+				}
+			}
+      cerr << "\t" << intervals.size() << " intervals found." << endl;
+    }
+    void scan(Read &read, vector <size_t> &regions, vector <size_t> &selectedIntervals, IntervalListPosition &position, Strandedness strandedness) {
+      if (Globals::sorted) {
+        if (chromosomes[position.chromosomeId] != read.getChromosome()) {
+          if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) != unknownChromosomes.end()) return;
+          for (position.chromosomeId = 0; (position.chromosomeId < chromosomes.size()) && (chromosomes[position.chromosomeId] != read.getChromosome()); position.chromosomeId++) ;
+          if (position.chromosomeId == chromosomes.size()) {
+            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << "' (found in your reads) is not present in your annotation file." << endl;
+            unknownChromosomes.push_back(read.getChromosome());
+            position.reset();
+            return;
+          }
+          position.intervalId = chrStarts[position.chromosomeId];
+        }
+      }
+      else {
+        unsigned int bin = read.getStart() / binSize;
+        auto         p   = bins.find(read.getChromosome());
+        if (p == bins.end()) {
+          if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) == unknownChromosomes.end()) {
+            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
+            unknownChromosomes.push_back(read.getChromosome());
+          }
+          return;
+        }
+        bin = min<unsigned int>(bin, p->second.size()-1);
+        position.intervalId   = p->second[bin];
+        position.chromosomeId = intervals[position.intervalId].getChromosomeId();
+      }
+      while ((position.intervalId < intervals.size()) && (intervals[position.intervalId].getChromosomeId() == position.chromosomeId) && (intervals[position.intervalId].isBefore(read))) {
+        position.intervalId++;
+      }
+      size_t id = position.intervalId;
+      EvaluationStructure evaluation(read);
+      while ((id < intervals.size()) && (intervals[id].getChromosomeId() == position.chromosomeId) && (! intervals[id].isAfter(read))) {
+        TypedInterval &interval = intervals[id];
+        if (Globals::config->checkStrand(interval.getType(), interval.getStrand(), read.getStrand())) {
+          size_t o;
+          if ((o = Globals::intervalOverlapFunction(interval, read)) > 0) {
+            size_t d = 0;
+            if (Globals::config->isUpstream(interval.getType())) {
+              d = read.getDistance(interval.getEnd());
+            }
+            else if (Globals::config->isDownstream(interval.getType())) {
+              d = read.getDistance(interval.getStart());
+            }
+            evaluation.set(id, interval.getType(), o, d);
+          }
+        }
+        id++;
+      }
+      evaluation.getFirst(regions);
+      //cout << "Evaluating " << regions.size() << " intervals." << endl;
+      if (Globals::intervalStats) {
+        evaluation.getIds(regions, selectedIntervals);
+      }
+    }
+    TypedInterval &getInterval (size_t i) {
+      return intervals[i];
+    }
+};
+
+
 class Reader {
   protected:
     ifstream file;
     XamRecord record;
+    size_t alternativeHitId;
+    Read read;
+    bool over;
 
   public:
-    Reader (string &fileName): file(fileName.c_str()) {
+    Reader (string &fileName): file(fileName.c_str()), over(false), alternativeHitId(0) {
       if (! file.good()) {
         cerr << "Error, file '" << fileName << "' does not exists!" << endl;
         exit(EXIT_FAILURE);
@@ -622,59 +1368,92 @@ class Reader {
     }
     virtual ~Reader () {}
     virtual XamRecord &getRecord() {
-      getNextRecord();
       return record;
     }
+    void gotoNextRead () {
+      if (alternativeHitId == record.getAlternativeHits().size()) {
+        getNextRecord();
+        read.reset(record);
+        alternativeHitId = 0;
+      }
+      else {
+        cout << alternativeHitId << "/" << record.getAlternativeHits().size() << endl;
+        read.setNextAlternativeHit(record.getAlternativeHits()[alternativeHitId]);
+        ++alternativeHitId;
+      }
+    }
+    Read &getRead () {
+      return read;
+    }
     virtual void getNextRecord() = 0;
+    bool isOver () { return over; }
 };
+
 
 class SamReader: public Reader {
   public:
     SamReader (string &fileName): Reader(fileName) {
-      lock_guard<mutex> lock(printMutex);
+      lock_guard<mutex> lock(Globals::printMutex);
       cerr << "Reading SAM file " << fileName << endl;
+    }
+    void parseCigar (string &unformatted, Cigar &formatted) {
+      int value = 0;
+      for (char c: unformatted) {
+        if ((c >= '0') && (c <= '9')) {
+          value *= 10;
+          value += (c - '0');
+        }
+        else {
+          formatted.push_back(make_pair(c, value));
+          value = 0;
+        }
+      }
     }
     virtual void getNextRecord () {
       string line;
       vector <string> splittedLine;
-      vector <pair <char, int>> cigar;
+      vector <string> alternativeHitsUnformatted;
+      vector <string> alternativeHitUnformatted;
+      Cigar cigar;
       do {
         if (! getline(file, line)) {
-          record.setOver();
+          over = true;
           return;
         }
       }
       while ((line.empty()) || (line[0] == '@') || (line[0] == '#'));
       split(line, '\t', splittedLine);
       assert(splittedLine.size() >= 12);
+      record.clear();
       record.setFlags(stoi(splittedLine[1]));
       record.setChromosome(splittedLine[2]);
       record.setStart(stoul(splittedLine[3]));
       record.setName(splittedLine[0]);
       record.setSize(splittedLine[9].size());
-      int value = 0;
-      for (char c: splittedLine[5]) {
-        if ((c >= '0') && (c <= '9')) {
-          value *= 10;
-          value += (c - '0');
-        }
-        else {
-          cigar.push_back(make_pair(c, value));
-          value = 0;
-        }
-      }
+      record.setNHits(1);
+      parseCigar(splittedLine[5], cigar);
       record.setCigar(cigar);
-      string key;
+      string key, value;
       for (unsigned int i = 11; i < splittedLine.size(); i++) {
         string &part = splittedLine[i];
         size_t pos   = part.find(':');
         key = part.substr(0, pos);
         if (key == "NH") {
           record.setNHits(stoul(part.substr(part.find(':', pos+1)+1)));
-          return;
+        }
+        else if (key == "XA") {
+          value = part.substr(part.find(':', pos+1)+1);
+          split(value, ';', alternativeHitsUnformatted);
+          for (string &s: alternativeHitsUnformatted) {
+            split(s, ',', alternativeHitUnformatted);
+            cigar.clear();
+            parseCigar(alternativeHitUnformatted[2], cigar);
+            AlternativeHit alternativeHit = { alternativeHitUnformatted[0], alternativeHitUnformatted[1][0] == '+', stoul(alternativeHitUnformatted[1].substr(1)), cigar };
+            record.getAlternativeHits().push_back(alternativeHit);
+          }
         }
       }
-      record.setNHits(1);
+      return;
     }
 };
 
@@ -684,7 +1463,7 @@ class BamReader: public Reader {
     gzFile file;
   public:
     BamReader (string &fileName): Reader(fileName) {
-      lock_guard<mutex> lock(printMutex);
+      lock_guard<mutex> lock(Globals::printMutex);
       cerr << "Reading BAM file " << fileName << endl;
       char buffer[1000000];
       int32_t tlen, nChrs, size;
@@ -708,7 +1487,7 @@ class BamReader: public Reader {
     }
     virtual void getNextRecord () {
       if (gzeof(file)) {
-        record.setOver();
+        over = true;
         gzclose(file);
         return;
       }
@@ -716,9 +1495,10 @@ class BamReader: public Reader {
       int32_t  v_32, size, chrId, pos, lReadName, lSeq, flags, nCigar;
       uint32_t v_u32, binMqNl, flagNc;
       float    v_f;
-      vector <pair <char, int>> cigar;
+      Cigar cigar;
       gzread(file, reinterpret_cast<char*>(&size), 4);
       if (gzeof(file)) {
+        over = true;
         record.setOver();
         gzclose(file);
         return;
@@ -831,778 +1611,6 @@ class BamReader: public Reader {
     }
 };
 
-class Interval {
-  protected:
-    Position start, end;
-  public:
-    Interval (): start(UNKNOWN), end(UNKNOWN) {}
-    Interval (Position s, Position e): start(s), end(e) { }
-    Interval (GtfLineParser &line): Interval(line.getStart(), line.getEnd()) {}
-    Position getStart () const     { return start; }
-    Position getEnd   () const     { return end; }
-    void     setStart (Position p) { start  = p; }
-    void     setEnd   (Position p) { end    = p; }
-    void     unSet    ()           { start = end = UNKNOWN; }
-    bool isSet () const {
-      return ((start != UNKNOWN) && (end != UNKNOWN));
-    }
-    Position getSize () const {
-      return (end - start + 1);
-    }
-    size_t overlaps (const Interval &i) const {
-      Position s = max<Position>(start, i.start), e = min<Position>(end, i.end);
-      if (s >= e) return 0;
-      return e - s;
-    }
-    bool includes (const Interval &i) const {
-      return ((i.start >= start) && (i.end <= end));
-    }
-    bool isIncluded (const Interval &i) const {
-      return i.includes(*this);
-    }
-    bool isBefore (const Interval &i) const {
-      return (end < i.start);
-    }
-    bool isAfter (const Interval &i) const {
-      return (i.isBefore(*this));
-    }
-    void merge (const Interval &i) {
-      start = min<Position>(start, i.start);
-      end   = max<Position>(end,   i.end);
-    }
-    void intersect (Interval &i) {
-      if (! isSet()) return;
-      start = max<Position>(start, i.start);
-      end   = min<Position>(end,   i.end);
-      if (start > end) {
-        start = end = UNKNOWN;
-      }
-    }
-    size_t getDistance (Position p) {
-      if (p < start) return (start - p);
-      if (p > end  ) return (p - end);
-      return 0;
-    }
-    friend bool operator<(const Interval &i1, const Interval &i2) {
-      return (i1.start < i2.start);
-    }
-};
-
-ostream &operator<< (ostream &os, const Interval &i) {
-  os << i.getStart() << "-" << i.getEnd();
-  return os;
-}
-
-
-class PlacedElement {
-  protected:
-    Strand strand;
-    unsigned int chromosomeId;
-  public:
-    PlacedElement (Strand st = Strand::ALL, unsigned int c = NO_CHR): strand(st), chromosomeId(c) { }
-    unsigned int getChromosomeId () const { return chromosomeId; }
-    Strand       getStrand ()       const { return strand; }
-};
-
-
-class TypedInterval: public Interval, public PlacedElement {
-  protected:
-    size_t type;
-    string id;
-  public:
-    TypedInterval (Position s = UNKNOWN, Position e = UNKNOWN, size_t t = NO_ID, Strand st = Strand::ALL, unsigned int c = NO_CHR, const string &i = EMPTY_STRING): Interval(s, e), PlacedElement(st, c), type(t), id(i) { }
-    TypedInterval (Interval &i, size_t t, Strand st, unsigned int c, const string &n = EMPTY_STRING): Interval(i), PlacedElement(st, c), type(t), id(n) { }
-    size_t getType () const { return type; }
-    string &getId () { return id; }
-    friend bool operator<(const TypedInterval &i1, const TypedInterval &i2) {
-      return ((i1.chromosomeId < i2.chromosomeId) || ((i1.chromosomeId == i2.chromosomeId) && (i1.start < i2.start)));
-    }
-};
-
-ostream &operator<< (ostream &os, const TypedInterval &ti) {
-  os << ti.getChromosomeId() << ":" << ti.getStart() << "-" << ti.getEnd() << " (" << config->getName(ti.getType()) << ")";
-  return os;
-}
-
-
-class Transcript: public Interval {
-  protected:
-    vector <Interval> exons;
-    vector <Interval> introns;
-  public:
-    Transcript (Position s = UNKNOWN, Position e = UNKNOWN): Interval(s, e) {}
-    Transcript (Interval e): Interval(e) {}
-    Transcript (vector < Interval > &i) {
-      for (Interval &e: i) addExon(e);
-    }
-    Transcript (GtfLineParser &line): Transcript(line.getStart(), line.getEnd()) {}
-    void addExon (const Interval &e) {
-      this->Interval::merge(e);
-      exons.push_back(e);
-      vector < Interval > newExons;
-      sort(exons.begin(), exons.end());
-      Interval currentExon;
-      for (Interval &exon: exons) {
-        if (! currentExon.isSet()) {
-          currentExon = exon;
-        }
-        else if (currentExon.isBefore(exon)) {
-          newExons.push_back(currentExon);
-          currentExon = exon;
-        }
-        else {
-          currentExon.merge(exon);
-        }
-      }
-      newExons.push_back(currentExon);
-      exons = newExons;
-    }
-    void addExon (Position s, Position e) {
-      addExon(Interval(s, e));
-    }
-    void checkStructure () {
-      sort(exons.begin(), exons.end());
-      if (exons.empty()) exons.push_back(*this);
-      Position start = UNKNOWN;
-      for (Interval &exon: exons) {
-        if (start != UNKNOWN) introns.push_back(Interval(start, exon.getStart()-1));
-        start = exon.getEnd()+1;
-        //cout << "Exon " << exon << endl;
-      }
-      //cout << "\t" << (*this) << endl;
-      //cout << "\tIntron size: " << introns.size() << endl;
-    }
-    size_t overlaps (Transcript &t) {
-      if (Interval::overlaps(t) == 0) return 0;
-      //cout << "passed" << endl;
-      size_t o = 0;
-      for (Interval &i1: exons) {
-        //cout << "i1 (" << name << "): " << i1.getStart() << "-" << i1.getEnd() << endl;
-        for (Interval &i2: t.exons) {
-          //cout << "\ti2 (" << name << "): " << i2.getStart() << "-" << i2.getEnd() << endl;
-          //cout << "\t\t" << i1.overlaps(i2) << endl;
-          o += i1.overlaps(i2);
-        }
-      }
-      return o;
-    }
-    bool includes (Transcript &t) {
-      //cout << "include transcript: " << start << "-" << end << " vs " << t.start << "-" << t.end << endl;
-      if (! Interval::includes(t)) return false;
-      //cout << "\tpassed" << endl;
-      for (Interval &e2: t.exons) {
-        if (! any_of(exons.begin(), exons.end(), [&e2](Interval &e1){return e1.includes(e2);})) return false;
-      }
-      return true;
-    }
-    bool isIncluded (Transcript &t) {
-      return t.isIncluded(*this);
-    }
-    void intersect (Interval &i) {
-      introns.clear();
-      vector <Interval> newExons;
-      for (Interval &exon: exons) {
-        exon.intersect(i);
-        if (exon.isSet()) {
-          newExons.push_back(exon);
-        }
-      }
-      exons = newExons;
-      if (exons.empty()) {
-        start = end = UNKNOWN;
-        return;
-      }
-      start = exons.front().getStart();
-      end   = exons.back().getEnd();
-    }
-    void merge (Interval &e) {
-      vector < Interval > newExons;
-      for (Interval &thisExon: exons) {
-        if (thisExon.overlaps(e)) {
-          e.merge(thisExon);
-        }
-        else {
-          newExons.push_back(thisExon);
-        }
-      }
-      newExons.push_back(e);
-      exons = newExons;
-    }
-    void merge (Transcript &t) {
-      for (Interval &exon: t.getExons()) {
-        merge(exon);
-      }
-    }
-    vector <Interval> &getExons () {
-      return exons;
-    }
-    vector <Interval> &getIntrons () {
-      //cout << "\t\t# introns: " << introns.size() << endl;
-      return introns;
-    }
-    friend ostream &operator<< (ostream &os, const Transcript &t);
-};
-
-ostream &operator<< (ostream &os, const Transcript &t) {
-  for (const Interval &exon: t.exons) os << exon << " ";
-  return os;
-}
-
-inline bool strandF (bool strand, bool isFirst, bool isPaired) {
-  if (isPaired) {
-    cerr << "Error! Strandedness 'F' should be used for single-end reads.\nExiting." << endl;
-    exit(EXIT_FAILURE);
-  }
-  return strand;
-}
-inline bool strandR (bool strand, bool isFirst, bool isPaired) {
-  if (isPaired) {
-    cerr << "Error! Strandedness 'R' should be used for single-end reads.\nExiting." << endl;
-    exit(EXIT_FAILURE);
-  }
-  return ! strand;
-}
-inline bool strandFF (bool strand, bool isFirst, bool isPaired) {
-  if (! isPaired) {
-    cerr << "Error! Strandedness 'FF' should be used for paired-end reads.\nExiting." << endl;
-    exit(EXIT_FAILURE);
-  }
-  return strand;
-}
-inline bool strandFR (bool strand, bool isFirst, bool isPaired) {
-  if (! isPaired) {
-    cerr << "Error! Strandedness 'FR' should be used for paired-end reads.\nExiting." << endl;
-    exit(EXIT_FAILURE);
-  }
-  return (strand == isFirst);
-}
-inline bool strandRF (bool strand, bool isFirst, bool isPaired) {
-  if (! isPaired) {
-    cerr << "Error! Strandedness 'RF' should be used for paired-end reads.\nExiting." << endl;
-    exit(EXIT_FAILURE);
-  }
-  return (strand != isFirst);
-}
-inline bool strandU (bool strand, bool isFirst, bool isPaired) {
-  return true;
-}
-
-class Read: public Transcript {
-  protected:
-    string name, chromosome;
-    bool strand, paired, first;
-    unsigned int nHits;
-    size_t size;
-  public:
-    Read () {}
-    Read (XamRecord &record, StrandednessFunction strandednessFunction): Transcript(record.getStart()), name(record.getName()), chromosome(record.getChromosome()), paired(record.isPaired()), nHits(record.getNHits()), size(0) {
-      addPart(record);
-      strand = strandednessFunction(record.getStrand(), record.isFirst(), record.isPaired());
-    }
-    void addPart(XamRecord &record) {
-      Position s = record.getStart(), e = record.getStart();
-      start      = min<Position>(start, record.getStart());
-      first      = record.isFirst();
-      for (auto &part: record.getCigar()) {
-        char c = part.first;
-        int  v = part.second;
-        switch (c) {
-          case 'M':
-          case 'D':
-          case '=':
-          case 'X':
-            e += v;
-            break;
-          case 'N':
-            if (s != e) addExon(s, e-1);
-            introns.push_back(Interval(e, e+v-1));
-            //cout << "Adding intron in read " << introns.back().getStart() << "-" << introns.back().getEnd() << endl;
-            e += v;
-            s = e;
-            break;
-          case 'I':
-          case 'S':
-          case 'H':
-          case 'P':
-            break;
-          default:
-            cerr << "Problem in the cigar: do not understand char " << c << endl;
-        }
-      }
-      if (s != e) addExon(s, e-1);
-      --e;
-      if ((end == UNKNOWN) || (e > end)) end = e;
-      nHits = min<unsigned int>(nHits, record.getNHits());
-      size += record.getSize();
-      //cout << "Read: " << name << ", " << chromosome; for (Interval &e: exons) cout << " exon " << e.getStart() << "-" << e.getEnd(); cout << endl;
-    }
-    string &getName () { return name; }
-    bool getStrand() { return strand; }
-    string &getChromosome() { return chromosome; }
-    unsigned int getNHits () { return nHits; }
-    size_t getSize () { return size; }
-    bool isPaired () { return paired; }
-    bool hasFirst () { return first; }
-    friend ostream &operator<< (ostream &os, const Read &r);
-};
-
-ostream &operator<< (ostream &os, const Read &r) {
-  os << r.chromosome << ":" << static_cast<const Transcript &>(r);
-  return os;
-}
-
-
-class Gene: public Interval, public PlacedElement {
-  protected:
-    string id, source, type;
-    Transcript mergedTranscript, cds, utr5, utr3;
-    Interval upstream, downstream;
-  public:
-    Gene (const string &i, const string &s, const string &t, Position st, Position en, Strand str, unsigned int ci): Interval(st, en), PlacedElement(str, ci), id(i), source(s), type(t), mergedTranscript(st, en) { }
-    Gene (GtfLineParser &line, unsigned int c): Gene(line.hasTag("gene_id")? line.getTag("gene_id").front(): (line.hasTag("ID")? line.getTag("ID").front(): rtrimTo(line.getTag("Parent").front(), '.')), line.getSource(), line.getType(), line.getStart(), line.getEnd(), line.getStrand(), c) { }
-    string &getId ()     { return id; }
-    string &getSource () { return source; }
-    string &getType ()   { return type; }
-    void addExon (Interval &e) {
-      Interval::merge(e);
-      mergedTranscript.addExon(e);
-    }
-    void addCds (Interval &c) {
-      addExon(c);
-      if (cds.isSet()) cds.Interval::merge(c);
-      else             cds = c;
-    }
-    void setCds () {
-      if (! cds.isSet()) return;
-      Interval intervalCds = cds;
-      cds = mergedTranscript;
-      cds.intersect(intervalCds);
-    }
-    void setUtr () {
-      if (! cds.isSet()) return;
-      Interval i5(start, cds.getStart()-1), i3(cds.getEnd()+1, end);
-      utr5 = utr3 = mergedTranscript;
-      utr5.intersect(i5);
-      utr3.intersect(i3);
-      if (strand == Strand::R) swap(utr5, utr3);
-    }
-    void setUpDownStream () {
-      if (strand == Strand::F) {
-        upstream   = Interval(((getStart() <= upstreamSize)? 1: getStart()-upstreamSize), getStart()-1);
-        downstream = Interval(getEnd()+1, getEnd()+downstreamSize);
-      }
-      else {
-        downstream = Interval(((getStart() <= downstreamSize)? 1: getStart()-downstreamSize), getStart()-1);
-        upstream   = Interval(getEnd()+1, getEnd()+upstreamSize);
-      }
-    }
-    void checkStructure () {
-      mergedTranscript.checkStructure();
-      start = mergedTranscript.getStart();
-      end   = mergedTranscript.getEnd();
-      setCds();
-      setUtr();
-      setUpDownStream();
-    }
-    size_t overlaps (Read &read) {
-      return mergedTranscript.overlaps(read);
-    }
-    bool includes (Read &read) {
-      //cout << "gene include" << endl;
-      return (mergedTranscript.includes(read));
-    }
-    Transcript &getMergedTranscript () {
-      return mergedTranscript;
-    }
-    Transcript &getCds () {
-      return cds;
-    }
-    Transcript &getUtr5 () {
-      return utr5;
-    }
-    Transcript &getUtr3 () {
-      return utr3;
-    }
-    Interval &getUpstream () {
-      return upstream;
-    }
-    Interval &getDownstream () {
-      return downstream;
-    }
-    friend bool operator<(const Gene &g1, const Gene &g2) {
-      return ((g1.chromosomeId < g2.chromosomeId) || ((g1.chromosomeId == g2.chromosomeId) && (g1.start < g2.start)));
-    }
-};
-
-inline size_t intervalInclusion (Interval &i, Interval &r) {
-  return (i.includes(r))? 1: 0;
-}
-inline size_t intervalOverlapPc (Interval &i, Interval &r) {
-  size_t o = i.overlaps(r);
-  return (r.getSize() * overlap <= o)? o: 0;
-}
-inline size_t intervalOverlap (Interval &i, Interval &r) {
-  size_t o = i.overlaps(r);
-  return (o >= overlap)? o: 0;
-}
-
-struct IntervalListPosition {
-  size_t chromosomeId, intervalId;
-  IntervalListPosition (): chromosomeId(0), intervalId(0) {}
-  void reset () {
-    chromosomeId = intervalId = 0;
-  }
-};
-
-class EvaluationStructure {
-  protected:
-    vector < vector < pair < size_t, size_t > > > evaluation;
-    vector < vector < size_t > > ids;
-    unsigned int nHits;
-  public:
-    EvaluationStructure (Read &r): evaluation(vector<vector<pair<size_t, size_t>>>(config->getNElements(), vector<pair<size_t, size_t>>(r.getExons().size()))), ids(config->getNElements()), nHits(0) {
-      for (size_t i = 0; i < config->getNElements(); ++i) {
-        for (size_t j = 0; j < r.getExons().size(); ++j) {
-          evaluation[i][j] = {0, 0};
-        }
-      }
-    }
-    void set (size_t id, size_t type, size_t exonId, size_t overlap, size_t distance) {
-      ids[type].push_back(id);
-      evaluation[type][exonId].first  = overlap;
-      evaluation[type][exonId].second = distance;
-      ++nHits;
-    }
-    void getFirst (vector <size_t> &regions) {
-      if (nHits == 0) return;
-      //cout << "starting" << endl;
-      size_t goodId = NO_ID;
-      RegionType regionType;
-      vector < size_t > selected;
-      size_t maxOverlap = 0;
-      for (size_t i = 0; i < evaluation.size(); ++i) {
-        regionType = config->getElement(i);
-        //cout << "\t1: " << regionType.id << ", " << regionType.subId << endl;
-        if ((goodId != NO_ID) && (regionType.id != goodId)) {
-          //cout << "\t2" << endl;
-          break;
-        }
-        bool presentInAll = true;
-        size_t overlap = 0;
-        for (size_t exonId = 0; (exonId < evaluation[regionType.id].size()) && (presentInAll); ++exonId) {
-          if (evaluation[i][exonId].first > 0) {
-            //cout << "\t\t3: " << evaluation[i][exonId].first << endl;
-            overlap += evaluation[i][exonId].first;
-            goodId = regionType.id;
-          }
-          else {
-            //cout << "\t\t3: not here" << endl;
-            presentInAll = false;
-          }
-        }
-        if (overlap > 0) {
-          if (overlap > maxOverlap) {
-            //cout << "\t4" << endl;
-            selected   = { i };
-            maxOverlap = overlap;
-          }
-          else if (overlap == maxOverlap) {
-            //cout << "\t5" << endl;
-            selected.push_back(i);
-          }
-        }
-      }
-      if (selected.empty()) {
-        //cout << "\t6" << endl;
-        return;
-      }
-      if (selected.size() == 1) {
-        //cout << "\t7" << endl;
-        regions = selected;
-        return;
-      }
-      size_t minDistance = numeric_limits<size_t>::max();
-      for (size_t i: selected) {
-        for (auto &p: evaluation[i]) {
-          if (p.second < minDistance) {
-            minDistance = p.second;
-            regions = { i };
-          }
-          else if (p.second == minDistance) {
-            regions.push_back(i);
-          }
-        }
-      }
-    }
-    void getIds (vector <size_t> &regions, vector <size_t> &intervals) {
-      for (size_t r: regions) {
-        intervals.insert(intervals.end(), ids[r].begin(), ids[r].end());
-      }
-    }
-};
-
-class IntervalList {
-  protected:
-    vector <string>                         chromosomes;
-    vector <string>                         unknownChromosomes;
-    vector <TypedInterval>                  intervals;
-    vector <unsigned int>                   chrStarts;
-		unordered_map <string, vector <size_t>> bins;
-
-
-  public:
-    IntervalList(string &fileName) {
-      ifstream file (fileName.c_str());
-      unordered_map < string, unsigned int> geneHash;
-      unordered_set < string > unused;
-      vector < Gene > genes;
-      string line, chromosome;
-      unsigned long cpt;
-      unsigned int chromosomeId = numeric_limits<unsigned int>::max();
-      cerr << "Reading GTF file" << endl;
-      for (cpt = 0; getline(file, line); cpt++) {
-        if ((! line.empty()) && (line[0] != '#')) {
-          //cout << line << endl;
-          GtfLineParser parsedLine(line);
-          parsedLine.setSource(config->translate(parsedLine.getSource()));
-          parsedLine.setType(config->translate(parsedLine.getType()));
-          if (parsedLine.getChromosome() != chromosome) {
-            geneHash.clear();
-            unused.clear();
-            chromosome = parsedLine.getChromosome();
-            bool seen = false;
-            for (unsigned int i = 0; (i < chromosomes.size()) && (! seen); i++) {
-              if (chromosomes[i] == chromosome) {
-                chromosomeId = i;
-                seen         = true;
-              }
-            }
-            if (! seen) {
-              chromosomeId = chromosomes.size();
-              chromosomes.push_back(chromosome);
-            }
-          }
-          if (parsedLine.getType() == "gene") {
-            string geneId;
-            if      (parsedLine.hasTag("ID"))      geneId = parsedLine.getTag("ID").front();
-            else if (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
-            else {
-              cerr << "Warning, cannot deduce gene id at line " << cpt << ": '" << line << "'." << endl;
-            }
-            Gene gene(parsedLine, chromosomeId);
-            geneHash[geneId] = genes.size();
-            genes.push_back(gene);
-          }
-          else if (parsedLine.getType() == "transcript") {
-            string id, geneId;
-            if      (parsedLine.hasTag("ID"))            id = parsedLine.getTag("ID").front();
-            else if (parsedLine.hasTag("transcript_id")) id = parsedLine.getTag("transcript_id").front();
-            else {
-              cerr << "Warning, cannot deduce transcript id at line " << cpt << ": '" << line << "'." << endl;
-            }
-            if      (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
-            else if (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
-            else {
-              cerr << "Warning, cannot deduce transcript parent id at line " << cpt << ": '" << line << "'." << endl;
-            }
-            if ((unused.find(geneId) == unused.end()) && (geneHash.find(geneId) != geneHash.end())) {
-              geneHash[id] = geneHash[geneId];
-            }
-          }
-          else if (parsedLine.getType() == "exon") {
-            string geneId;
-            if      (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
-            else if (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
-            else {
-              cerr << "Warning, cannot deduce exon id at line " << cpt << ": '" << line << "'." << endl;
-            }
-            if (unused.find(geneId) == unused.end()) {
-              auto pos = geneHash.find(geneId);
-              Interval e(parsedLine);
-              if (pos == geneHash.end()) {
-                Gene gene(parsedLine, chromosomeId);
-                gene.addExon(e);
-                geneHash[geneId] = genes.size();
-                genes.push_back(gene);
-              }
-              else {
-                genes[pos->second].addExon(e);
-              }
-            }
-          }
-          else if (parsedLine.getType() == "CDS") {
-            string geneId;
-            if      (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
-            else if (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
-            else {
-              cerr << "Warning, cannot deduce CDS parent id at line " << cpt << ": '" << line << "'." << endl;
-            }
-            auto pos = geneHash.find(geneId);
-            Interval e(parsedLine);
-            if (pos == geneHash.end()) {
-              Gene gene(parsedLine, chromosomeId);
-              gene.addCds(e);
-              geneHash[geneId] = genes.size();
-              genes.push_back(gene);
-            }
-            else {
-              genes[pos->second].addCds(e);
-            }
-          }
-          else if (parsedLine.getType() == "5'UTR") {
-            // skip this
-          }
-          else if (parsedLine.getType() == "3'UTR") {
-            // skip this
-          }
-          else if (config->getOrder(parsedLine.getSource(), parsedLine.getType(), parsedLine.getStrand()) != NO_ID) {
-            string id;
-            if      (parsedLine.hasTag("ID"))      id = parsedLine.getTag("ID").front();
-            else if (parsedLine.hasTag("gene_id")) id = parsedLine.getTag("gene_id").front();
-            else {
-              if (parsedLine.hasTag("Parent")) id = parsedLine.getTag("Parent").front() + "_" + parsedLine.getType();
-              else {
-                cerr << "Warning, cannot deduce id at line " << cpt << ": '" << line << "'." << endl;
-              }
-            }
-            geneHash[id] = genes.size();
-            genes.push_back(Gene(parsedLine, chromosomeId));
-          }
-          else {
-            if (parsedLine.hasTag("gene_id"))       unused.insert(parsedLine.getTag("gene_id").front());
-            if (parsedLine.hasTag("transcript_id")) unused.insert(parsedLine.getTag("transcript_id").front());
-            if (parsedLine.hasTag("ID"))            unused.insert(parsedLine.getTag("ID").front());
-
-          }
-        }
-        if (progress && (cpt % 100000 == 0)) cerr << "\t" << cpt << " lines read.\r" << flush;
-      }
-      cerr << "\t" << cpt << " lines read, done.  " << genes.size() << " genes found." << endl;
-      for (Gene &gene: genes) {
-        string      &source       = gene.getSource();
-        string      &type         = gene.getType();
-        Strand       strand       = gene.getStrand();
-        unsigned int chromosomeId = gene.getChromosomeId();
-        size_t       regionType;
-        //cerr << "\t\tGene: " << gene.getSource() << ":" << gene.getType() << endl;
-        gene.checkStructure();
-        if ((regionType = config->getOrder(source, "CDS", strand)) != NO_ID) {
-          for (Interval &exon: gene.getCds().getExons()) {
-            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId() + "-CDS"));
-          }
-        }
-        if ((regionType = config->getOrder(source, "5'UTR", strand)) != NO_ID) {
-          for (Interval &exon: gene.getUtr5().getExons()) {
-            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId() + "-5UTR"));
-          }
-        }
-        if ((regionType = config->getOrder(source, "3'UTR", strand)) != NO_ID) {
-          for (Interval &exon: gene.getUtr3().getExons()) {
-            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId() + "-3UTR"));
-          }
-        }
-        if ((regionType = config->checkIntrons(source, type)) != NO_ID) {
-          for (Interval &intron: gene.getMergedTranscript().getIntrons()) {
-            intervals.push_back(TypedInterval(intron, regionType, strand, chromosomeId, gene.getId() + "-intron"));
-          }
-        }
-        if ((regionType = config->checkUpstream(source, type)) != NO_ID) {
-          intervals.push_back(TypedInterval(gene.getUpstream(), regionType, strand, chromosomeId, gene.getId() + "-upstream"));
-        }
-        if ((regionType = config->checkDownstream(source, type)) != NO_ID) {
-          intervals.push_back(TypedInterval(gene.getDownstream(), regionType, strand, chromosomeId, gene.getId() + "-downstream"));
-        }
-        if ((regionType = config->getOrder(source, type, strand)) != NO_ID) {
-          for (Interval &exon: gene.getMergedTranscript().getExons()) {
-            intervals.push_back(TypedInterval(exon, regionType, strand, chromosomeId, gene.getId()));
-          }
-        }
-      }
-      sort(intervals.begin(), intervals.end());
-      chrStarts = vector<unsigned int>(chromosomes.size());
-      chromosomeId = numeric_limits<unsigned int>::max();
-      for (unsigned int i = 0; i < intervals.size(); i++) {
-        //cerr << "\t" << intervals[i] << endl;
-        if (intervals[i].getChromosomeId() != chromosomeId) {
-          chrStarts[chromosomeId = intervals[i].getChromosomeId()] = i;
-        }
-      }
-			if (! sorted) {
-				//cerr << "Not all sorted" << endl;
-				for (unsigned int i = 0; i < intervals.size(); i++) {
-					vector<size_t> &chrBins    = bins[chromosomes[intervals[i].getChromosomeId()]];
-					unsigned        bin        = intervals[i].getEnd() / binSize;
-					if (chrBins.size() <= bin) {
-						//cerr << "Adding " << chrBins.size() << "-" << bin << ": " << i << endl;
-						chrBins.insert(chrBins.end(), bin-chrBins.size()+1, i);
-					}
-				}
-			}
-      cerr << "\t" << intervals.size() << " intervals found." << endl;
-    }
-    void scan(Read &read, vector <size_t> &regions, vector <size_t> &selectedIntervals, IntervalListPosition &position, Strandedness strandedness) {
-      if (sorted) {
-        if (chromosomes[position.chromosomeId] != read.getChromosome()) {
-          if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) != unknownChromosomes.end()) return;
-          for (position.chromosomeId = 0; (position.chromosomeId < chromosomes.size()) && (chromosomes[position.chromosomeId] != read.getChromosome()); position.chromosomeId++) ;
-          if (position.chromosomeId == chromosomes.size()) {
-            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
-            unknownChromosomes.push_back(read.getChromosome());
-            position.reset();
-            return;
-          }
-          position.intervalId = chrStarts[position.chromosomeId];
-        }
-      }
-      else {
-				unsigned int bin = read.getStart() / binSize;
-				auto         p   = bins.find(read.getChromosome());
-				if (p == bins.end()) {
-          if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) == unknownChromosomes.end()) {
-            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
-            unknownChromosomes.push_back(read.getChromosome());
-          }
-          return;
-        }
-				bin = min<unsigned int>(bin, p->second.size()-1);
-				position.intervalId   = p->second[bin];
-				position.chromosomeId = intervals[position.intervalId].getChromosomeId();
-      }
-      while ((position.intervalId < intervals.size()) && (intervals[position.intervalId].getChromosomeId() == position.chromosomeId) && (intervals[position.intervalId].isBefore(read))) {
-        position.intervalId++;
-      }
-      size_t id = position.intervalId;
-      EvaluationStructure evaluation(read);
-      while ((id < intervals.size()) && (intervals[id].getChromosomeId() == position.chromosomeId) && (! intervals[id].isAfter(read))) {
-        TypedInterval &interval = intervals[id];
-        if (config->checkStrand(interval.getType(), interval.getStrand(), read.getStrand())) {
-          for (size_t exonId = 0; exonId < read.getExons().size(); ++exonId) {
-            Interval &exon = read.getExons()[exonId];
-            size_t o;
-            if ((o = intervalOverlapFunction(interval, exon)) > 0) {
-              size_t d = 0;
-              if (config->isUpstream(interval.getType())) {
-                d = exon.getDistance(interval.getEnd());
-              }
-              else if (config->isDownstream(interval.getType())) {
-                d = exon.getDistance(interval.getStart());
-              }
-              evaluation.set(id, interval.getType(), exonId, o, d);
-            }
-          }
-        }
-        id++;
-      }
-      evaluation.getFirst(regions);
-      //cout << "Evaluating " << regions.size() << " intervals." << endl;
-      if (intervalStats) {
-        evaluation.getIds(regions, selectedIntervals);
-      }
-    }
-    TypedInterval &getInterval (size_t i) {
-      return intervals[i];
-    }
-};
 
 class Counter {
   protected:
@@ -1620,28 +1628,28 @@ class Counter {
       if      (regions.empty())    nUnassigned++;
       else if (regions.size() > 1) nAmbiguous++;
       else if (nHits == 1)         nUnique++;
-      if ((nHits > 1) && (strategy == Strategy::DEFAULT)) {
+      if ((nHits > 1) && (Globals::strategy == Strategy::DEFAULT)) {
         nMultiple++;
         auto pos = readCounts.find(read);
         if (pos == readCounts.end()) {
           readCounts[read] = make_pair(nHits-1, regions);
           rawCounts[read]  = nHits;
           ++nReads;
-          if (intervalStats) readsIntervals[read] = intervals;
+          if (Globals::intervalStats) readsIntervals[read] = intervals;
         }
         else {
           unordered_map<string, vector <size_t>>::iterator pri;
-          if (intervalStats) pri = readsIntervals.find(read);
+          if (Globals::intervalStats) pri = readsIntervals.find(read);
           pos->second.first--;
           pos->second.second.insert(pos->second.second.end(), regions.begin(), regions.end());
-          if (intervalStats) readsIntervals[read].insert(readsIntervals[read].end(), intervals.begin(), intervals.end());
+          if (Globals::intervalStats) readsIntervals[read].insert(readsIntervals[read].end(), intervals.begin(), intervals.end());
           if (pos->second.first == 0) {
             if (! pos->second.second.empty()) {
-              printReadStatsFunction(read, nHits, pos->second.second);
+              Globals::printReadStatsFunction(read, nHits, pos->second.second);
               setUnique(pos->second.second);
               ++regionCounts[pos->second.second];
               if (pos->second.second.size() == 1) nRescued++;
-              if (intervalStats) {
+              if (Globals::intervalStats) {
                 if (! pri->second.empty()) {
                   sort(pri->second.begin(), pri->second.end());
                   ++intervalCounts[pri->second];
@@ -1657,7 +1665,7 @@ class Counter {
       else {
         if (! regions.empty()) {
           bool output = false;
-          if (strategy == Strategy::RANDOM) {
+          if (Globals::strategy == Strategy::RANDOM) {
             if (seen.find(read) == seen.end()) {
               auto         p = chosenId.find(read);
               unsigned int i;
@@ -1678,10 +1686,10 @@ class Counter {
               }
             }
           }
-          if ((strategy != Strategy::RANDOM) || (output)) {
-            printReadStatsFunction(read, nHits, regions);
+          if ((Globals::strategy != Strategy::RANDOM) || (output)) {
+            Globals::printReadStatsFunction(read, nHits, regions);
             setUnique(regions);
-            regionCounts[regions] += (strategy == Strategy::RATIO)? 1.0/nHits: 1;
+            regionCounts[regions] += (Globals::strategy == Strategy::RATIO)? 1.0/nHits: 1;
             if (! intervals.empty()) {
               sort(intervals.begin(), intervals.end());
               ++intervalCounts[intervals];
@@ -1718,65 +1726,33 @@ class Counter {
           exit(EXIT_FAILURE);
         }
       }
-      unsigned int cpt;
+      unsigned int cpt = 0;
       IntervalListPosition position;
       Position previousPos = 0;
-      unordered_map < string, array < queue < Read >, 2 > > pendingReads;
-      XamRecord &record = reader->getRecord();
       regionCounts.clear();
-      for (cpt = 0; !record.isOver(); cpt++, reader->getNextRecord()) {
-        if (record.isMapped()) {
-          Read read;
-          bool pending = true;
-          if (record.isPaired()) {
-            string readName = record.getName();
-            size_t bucket   = record.isFirst()? 0: 1;
-            auto   pos      = pendingReads.find(readName);
-            if (pos != pendingReads.end()) {
-              queue < Read > &reads = pos->second[1-bucket];
-              if (! reads.empty()) {
-                pending = false;
-                read = reads.front();
-                read.addPart(record);
-                reads.pop();
-                if ((reads.empty()) && (pos->second[bucket].empty())) pendingReads.erase(pos);
-              }
-            }
-            if (pending) {
-              read = Read(record, strandednessFunction);
-              pendingReads[readName][bucket].push(read);
-            }
-          }
-          else {
-            pending = false;
-            read = Read(record, strandednessFunction);
-          }
-          if (! pending) {
-            if ((strategy != Strategy::UNIQUE) || (read.getNHits() == 1)) {
-              nHits++;
-              vector < size_t > regions, intervals;
-              intervalList.scan(read, regions, intervals, position, strandedness);
-              addCount(read.getName(), regions, intervals, read.getNHits());
-            }
-          }
-          if (previousPos > record.getStart()) pendingReads.clear();
-          previousPos = record.getStart();
+      reader->gotoNextRead();
+      for (Read &read = reader->getRead(); !reader->isOver(); cpt++, reader->gotoNextRead()) {
+        if ((Globals::strategy != Strategy::UNIQUE) || (read.getNHits() == 1)) {
+          ++nHits;
+          vector < size_t > regions, intervals;
+          intervalList.scan(read, regions, intervals, position, strandedness);
+          addCount(read.getName(), regions, intervals, read.getNHits());
         }
-        if (progress && (nThreads == 1) && (cpt % 1000000 == 0)) cerr << "\t" << cpt << " lines read.\r" << flush;
+        previousPos = read.getStart();
+        if (Globals::progress && (Globals::nThreads == 1) && (cpt % 1000000 == 0)) cerr << "\t" << cpt << " lines read.\r" << flush;
       }
       cerr << "\t" << cpt << " lines read, done." << endl;
       for (auto &e: readCounts) {
-        //cout << "Problem with " << e.first << ": " << e.second.first << " hits are missing." << endl;
         if (! e.second.second.empty()) {
-          if ((strategy != Strategy::UNIQUE) || (rawCounts[e.first] == 1)) {
-            printReadStatsFunction(e.first, rawCounts[e.first], e.second.second);
+          if ((Globals::strategy != Strategy::UNIQUE) || (rawCounts[e.first] == 1)) {
+            Globals::printReadStatsFunction(e.first, rawCounts[e.first], e.second.second);
             setUnique(e.second.second);
-            regionCounts[e.second.second] += (strategy == Strategy::RATIO)? 1.0/rawCounts[e.first]: 1;
+            regionCounts[e.second.second] += (Globals::strategy == Strategy::RATIO)? 1.0/rawCounts[e.first]: 1;
             if ((rawCounts[e.first] > 1) && (e.second.second.size() == 1)) nRescued++;
           }
         }
       }
-      if (intervalStats) {
+      if (Globals::intervalStats) {
         for (auto &e: readsIntervals) {
           if (! e.second.empty()) {
             sort(e.second.begin(), e.second.end());
@@ -1784,7 +1760,6 @@ class Counter {
           }
         }
       }
-      pendingReads.clear();
       delete reader;
     }
     unordered_map<vector<size_t>, double> &getCounts () {
@@ -1803,14 +1778,14 @@ class Counter {
         printStats(nAmbiguous,  "# ambiguous hits:              ", nHits);
         printStats(nUnassigned, "# unassigned hits:             ", nHits);
       }
-      if (intervalStats) {
+      if (Globals::intervalStats) {
         vector < pair < string, unsigned int > > lines;
         for (auto &p: intervalCounts) {
           vector < string > names;
           string name;
           for (size_t i: p.first) {
             TypedInterval &interval = intervalList.getInterval(i);
-            names.push_back(interval.getId() + " (" + config->getName(interval.getType()) + ")");
+            names.push_back(interval.getId() + " (" + Globals::config->getName(interval.getType()) + ")");
           }
           sort(names.begin(), names.end());
           join(names, name, " -- ");
@@ -1825,18 +1800,19 @@ class Counter {
           }
           else {
             if (! currentName.empty()) {
-              intervalStatsFile << currentName << "\t" << count << "\n";
+              Globals::intervalStatsFile << currentName << "\t" << count << "\n";
             }
             currentName = line.first;
             count       = line.second;
           }
         }
         if (! currentName.empty()) {
-          intervalStatsFile << currentName << "\t" << count << "\n";
+          Globals::intervalStatsFile << currentName << "\t" << count << "\n";
         }
       }
     }
 };
+
 class TableCount {
   protected:
     IntervalList &intervalList;
@@ -1849,8 +1825,8 @@ class TableCount {
       for (auto &count: counts) {
         auto p = regionCounts.find(count.first);
         if (p == regionCounts.end()) {
-          regionCounts[count.first] = vector <unsigned int> (nInputs, 0);
-          vector <unsigned int> v (nInputs, 0);
+          regionCounts[count.first] = vector <unsigned int> (Globals::nInputs, 0);
+          vector <unsigned int> v (Globals::nInputs, 0);
           v[nColumns] = round(count.second);
           regionCounts[count.first] = v;
         }
@@ -1874,7 +1850,7 @@ class TableCount {
       outputFile << "\n";
       for (auto &l: lineNames) {
         vector < string > s;
-        for (size_t i: l) s.push_back(config->getName(i));
+        for (size_t i: l) s.push_back(Globals::config->getName(i));
         join(s, lineName, "--");
         outputFile << lineName;
         vector < unsigned int > &values = regionCounts[l];
@@ -1897,17 +1873,17 @@ inline void printUsage () {
   cerr <<     "\t\t-n name1 name2...: short name for each of the reads files\n";
   cerr <<     "\t\t-s strand: string (U, F, R, FR, RF, FF, defaut: F) (use several strand types if the library strategies differ)\n";
   cerr <<     "\t\t-f format (SAM or BAM): format of the read files (default: guess from file extension)\n";
-  cerr <<     "\t\t-l integer: overlap type (<0: read is included, <1: % overlap, otherwise: # nt, default: " << overlap << ")\n";
+  cerr <<     "\t\t-l integer: overlap type (<0: read is included, <1: % overlap, otherwise: # nt, default: " << Globals::overlap << ")\n";
   cerr <<     "\t\t-u: reads are unsorted (default: false)\n";
-  cerr <<     "\t\t-d integer: upstream region size (default: " << upstreamSize << ")\n";
-  cerr <<     "\t\t-D integer: downstream region size (default: " << downstreamSize << ")\n";
+  cerr <<     "\t\t-d integer: upstream region size (default: " << Globals::upstreamSize << ")\n";
+  cerr <<     "\t\t-D integer: downstream region size (default: " << Globals::downstreamSize << ")\n";
   cerr <<     "\t\t-y string: quantification strategy, valid values are: default, unique, random, ratio (default: default)\n";
-  cerr <<     "\t\t-e integer: attribute a read to a feature if at least N% of the hits map to the feature (default: " << static_cast<unsigned int>(rescueThreshold*100) << "%)\n";
+  cerr <<     "\t\t-e integer: attribute a read to a feature if at least N% of the hits map to the feature (default: " << static_cast<unsigned int>(Globals::rescueThreshold*100) << "%)\n";
   cerr << "\tOutput options:\n";
   cerr <<     "\t\t-p: print progress\n";
   cerr <<     "\t\t-m file: print mapping statistics for each read (slow, only work with 1 input file)\n";
   cerr <<     "\t\t-M file: print mapping statistics for each interval (slow, only work with 1 input file)\n";
-  cerr <<     "\t\t-t integer: # threads (default: " << nThreads << ")\n";
+  cerr <<     "\t\t-t integer: # threads (default: " << Globals::nThreads << ")\n";
   cerr <<     "\t\t-h: this help" << endl;
 }
 
@@ -1916,13 +1892,15 @@ inline void printVersion () {
 }
 
 int main(int argc, char **argv) {
-  overlap                   = -1.0;
-  sorted                    = true;
-  rescueThreshold           = 1.0;
-  intervalOverlapFunction   = intervalInclusion;
-  printReadStatsFunction    = printReadStatsVoid;
-  rescueFunction            = rescueVoid;
-  strategy                  = Strategy::DEFAULT;
+  Globals::overlap                   = -1.0;
+  Globals::sorted                    = true;
+  Globals::rescueThreshold           = 1.0;
+  Globals::intervalOverlapFunction   = intervalInclusion;
+  Globals::printReadStatsFunction    = printReadStatsVoid;
+  Globals::rescueFunction            = rescueVoid;
+  Globals::strategy                  = Strategy::DEFAULT;
+  Globals::strandedness              = Strandedness::F;
+  Globals::strandednessFunction      = strandF;
   string gtfFileName, outputFileName, configFileName = defaultConfigFileName;
   vector <string> readsFileNames, names;
   if (argc == 1) {
@@ -1956,20 +1934,17 @@ int main(int argc, char **argv) {
         outputFileName = string(argv[++i]);
       }
       else if (s == "-l") {
-        overlap = stof(argv[++i]);
-        if      (overlap < 0.0) intervalOverlapFunction = intervalInclusion;
-        else if (overlap < 1.0) intervalOverlapFunction = intervalOverlapPc;
-        else                    intervalOverlapFunction = intervalOverlap;
+        Globals::overlap = stof(argv[++i]);
+        if      (Globals::overlap < 0.0) Globals::intervalOverlapFunction = intervalInclusion;
+        else if (Globals::overlap < 1.0) Globals::intervalOverlapFunction = intervalOverlapPc;
+        else                             Globals::intervalOverlapFunction = intervalOverlap;
       }
       else if (s == "-s") {
         for (++i; i < argc; ++i) {
           s = argv[i];
-          if      (s == "U")  { strandednesses.push_back(Strandedness::U);  strandednessFunctions.push_back(strandU); }
-          else if (s == "F")  { strandednesses.push_back(Strandedness::F);  strandednessFunctions.push_back(strandF); }
-          else if (s == "R")  { strandednesses.push_back(Strandedness::R);  strandednessFunctions.push_back(strandR); }
-          else if (s == "FR") { strandednesses.push_back(Strandedness::FR); strandednessFunctions.push_back(strandFR); }
-          else if (s == "FF") { strandednesses.push_back(Strandedness::FF); strandednessFunctions.push_back(strandFF); }
-          else if (s == "RF") { strandednesses.push_back(Strandedness::RF); strandednessFunctions.push_back(strandRF); }
+          if      (s == "U")  { Globals::strandedness = Strandedness::U;  Globals::strandednessFunction = strandU; }
+          else if (s == "F")  { Globals::strandedness = Strandedness::F;  Globals::strandednessFunction = strandF; }
+          else if (s == "R")  { Globals::strandedness = Strandedness::R;  Globals::strandednessFunction = strandR; }
           else if (s[0] == '-') {--i; break;}
           else if (s.empty())   {--i; break;}
           else {
@@ -1980,26 +1955,26 @@ int main(int argc, char **argv) {
         }
       }
       else if (s == "-p") {
-        progress = true;
+        Globals::progress = true;
       }
       else if (s == "-t") {
-        nThreads = stoi(argv[++i]);
+        Globals::nThreads = stoi(argv[++i]);
       }
       else if (s == "-m") {
-        readStatsFile.open(string(argv[++i]));
-        printReadStatsFunction = printReadStats;
-        readStats              = true;
+        Globals::readStatsFile.open(string(argv[++i]));
+        Globals::printReadStatsFunction = printReadStats;
+        Globals::readStats              = true;
       }
       else if (s == "-M") {
-        intervalStatsFile.open(string(argv[++i]));
-        intervalStats = true;
+        Globals::intervalStatsFile.open(string(argv[++i]));
+        Globals::intervalStats = true;
       }
       else if (s == "-f") {
         for (++i; i < argc; ++i) {
           s = argv[i];
           lower(s);
-          if      (s == "sam")  { formats.push_back(ReadsFormat::SAM); }
-          else if (s == "bam")  { formats.push_back(ReadsFormat::BAM); }
+          if      (s == "sam")  { Globals::format = ReadsFormat::SAM; }
+          else if (s == "bam")  { Globals::format = ReadsFormat::BAM; }
           else if (s.empty())   {--i; break;}
           else if (s[0] == '-') {--i; break;}
           else {
@@ -2010,22 +1985,22 @@ int main(int argc, char **argv) {
         }
       }
       else if (s == "-e") {
-        rescueThreshold = stof(argv[++i])/100.0;
-        if (rescueThreshold < 1.0) rescueFunction = rescue;
+        Globals::rescueThreshold = stof(argv[++i])/100.0;
+        if (Globals::rescueThreshold < 1.0) Globals::rescueFunction = rescue;
       }
       else if (s == "-d") {
-        upstreamSize = stoul(argv[++i]);
+        Globals::upstreamSize = stoul(argv[++i]);
       }
       else if (s == "-D") {
-        downstreamSize = stoul(argv[++i]);
+        Globals::downstreamSize = stoul(argv[++i]);
       }
       else if (s == "-y") {
         s = argv[++i];
         lower(s);
-        if      (s == "default") { strategy = Strategy::DEFAULT; }
-        else if (s == "unique")  { strategy = Strategy::UNIQUE; }
-        else if (s == "random")  { strategy = Strategy::RANDOM; }
-        else if (s == "ratio")   { strategy = Strategy::RATIO; }
+        if      (s == "default") { Globals::strategy = Strategy::DEFAULT; }
+        else if (s == "unique")  { Globals::strategy = Strategy::UNIQUE; }
+        else if (s == "random")  { Globals::strategy = Strategy::RANDOM; }
+        else if (s == "ratio")   { Globals::strategy = Strategy::RATIO; }
         else {
           cerr << "Do not understand strategy " << s << "\n" << "Exiting." << endl;
           printUsage();
@@ -2033,7 +2008,7 @@ int main(int argc, char **argv) {
         }
       }
       else if (s == "-u") {
-        sorted = false;
+        Globals::sorted = false;
       }
       else if (s == "-v") {
         printVersion();
@@ -2060,7 +2035,7 @@ int main(int argc, char **argv) {
     printUsage();
     return EXIT_FAILURE;
   }
-  nInputs = readsFileNames.size();
+  Globals::nInputs = readsFileNames.size();
   if (names.empty()) {
     for (string &fileName: readsFileNames) {
       string n = fileName;
@@ -2071,40 +2046,12 @@ int main(int argc, char **argv) {
       names.push_back(n);
     }
   }
-  else if (names.size() != nInputs) {
+  else if (names.size() != Globals::nInputs) {
     cerr << "Number of names is not equal to number of file names.\nExiting." << endl;
     printUsage();
     return EXIT_FAILURE;
   }
-  if (strandednesses.size() == 0) {
-    strandednesses        = vector <Strandedness>         (nInputs, Strandedness::F);
-    strandednessFunctions = vector <StrandednessFunction> (nInputs, strandF);
-  }
-  else if (strandednesses.size() == 1) {
-    if (nInputs != 1) {
-      strandednesses        = vector <Strandedness>         (nInputs, strandednesses.front());
-      strandednessFunctions = vector <StrandednessFunction> (nInputs, strandednessFunctions.front());
-    }
-  }
-  else if (strandednesses.size() != nInputs) {
-    cerr << "Number of strandedness is not equal to number of file names.\nExiting." << endl;
-    printUsage();
-    return EXIT_FAILURE;
-  }
-  if (formats.size() == 0) {
-    formats = vector <ReadsFormat> (nInputs, ReadsFormat::UNKNOWN);
-  }
-  else if (formats.size() == 1) {
-    if (nInputs != 1) {
-      formats = vector <ReadsFormat> (nInputs, formats.front());
-    }
-  }
-  else if (formats.size() != nInputs) {
-    cerr << "Number of reads formats is not equal to number of file names.\nExiting." << endl;
-    printUsage();
-    return EXIT_FAILURE;
-  }
-  if ((readStats || intervalStats) && (nInputs != 1)) {
+  if ((Globals::readStats || Globals::intervalStats) && (Globals::nInputs != 1)) {
     cerr << "Only one reads file when providing reads or interval statistics.\nExiting." << endl;
     printUsage();
     return EXIT_FAILURE;
@@ -2121,35 +2068,35 @@ int main(int argc, char **argv) {
     buf = of.rdbuf();
   }
   ostream outputFile(buf);
-  config = new Config();
-  config->parse(configFileName);
+  Globals::config = new Config();
+  Globals::config->parse(configFileName);
   IntervalList intervalList (gtfFileName);
   TableCount table (intervalList);
-  if (nThreads == 1) {
+  if (Globals::nThreads == 1) {
     Counter counter (intervalList);
-    for (unsigned int i = 0; i < nInputs; i++) {
+    for (unsigned int i = 0; i < Globals::nInputs; i++) {
       counter.clear();
-      counter.read(readsFileNames[i], strandednesses.front(), strandednessFunctions.front(), formats.front());
+      counter.read(readsFileNames[i], Globals::strandedness, Globals::strandednessFunction, Globals::format);
       counter.dump();
       table.addCounter(counter);
     }
   }
   else {
-    vector < thread > threads(nThreads);
+    vector < thread > threads(Globals::nThreads);
     atomic < unsigned int > i(0);
     mutex m1, m2;
     for (thread &t: threads) {
       //t = thread([&intervalList, &m, &i, &readsFileNames, &names, &table]() {
       t = thread([&]() {
           Counter counter (intervalList);
-          while (i < nInputs) {
+          while (i < Globals::nInputs) {
           unsigned int thisI;
           m1.lock();
           thisI = i;
           ++i;
           m1.unlock();
           counter.clear();
-          counter.read(readsFileNames[thisI], strandednesses[thisI], strandednessFunctions[thisI], formats[thisI]);
+          counter.read(readsFileNames[thisI], Globals::strandedness, Globals::strandednessFunction, Globals::format);
           m2.lock();
           counter.dump();
           m2.unlock();
@@ -2162,8 +2109,8 @@ int main(int argc, char **argv) {
     }
   }
   table.dump(outputFile, names);
-  if (readStats)     readStatsFile.close();
-  if (intervalStats) intervalStatsFile.close();
+  if (Globals::readStats)     Globals::readStatsFile.close();
+  if (Globals::intervalStats) Globals::intervalStatsFile.close();
   cerr << "Successfully done." << endl;
   return 0;
 }
