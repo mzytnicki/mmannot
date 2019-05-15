@@ -337,6 +337,10 @@ class Config {
           }
         }
       }
+      if (order.empty()) {
+        cerr << "Error, the 'Order' section is empty!  Please provide annotations." << endl;
+        exit(EXIT_FAILURE);
+      }
       for (auto &i: introns) {
         size_t o = getOrder(get<0>(i), "intron", Strand::ALL);
         if (o == NO_ID) {
@@ -1286,6 +1290,10 @@ class IntervalList {
 					}
 				}
 			}
+      if (intervals.empty()) {
+        cerr << "Error, the annotation file has not been parsed properly!\nPlease check that your annotation file is not empty, and that your configuration file matches your annotation file.\nIf you have trouble designing a configuration file, please use the companion tool 'createConfigFile'.\n";
+        exit(EXIT_FAILURE);
+      }
       cerr << "\t" << intervals.size() << " intervals found." << endl;
     }
     void scan(Read &read, vector <size_t> &regions, vector <size_t> &selectedIntervals, IntervalListPosition &position) {
