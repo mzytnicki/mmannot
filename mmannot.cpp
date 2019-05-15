@@ -149,6 +149,7 @@ static inline void lower(string &s) {
 static inline void split(string &inString, char delim, vector <string> &outStrings) {
   stringstream ss(inString);
   string item;
+  outStrings.clear();
   while (getline(ss, item, delim)) {
     outStrings.push_back(item);
   }
@@ -859,6 +860,7 @@ class Read: public Interval {
     unsigned int nHits;
     AlternativeHits alternativeHits;
     void parseCigar (Cigar &cigar) {
+      if ((cigar.size() == 1) && (cigar.front().first == '*')) return;
       for (auto &part: cigar) {
         char c = part.first;
         int  v = part.second;
@@ -890,9 +892,6 @@ class Read: public Interval {
       alternativeHits = record.getAlternativeHits();
       strand          = Globals::strandednessFunction(record.getStrand());
       parseCigar(record.getCigar());
-      if (! alternativeHits.empty()) {
-        nHits = alternativeHits.size();
-      }
     }
     Read () {}
     Read (XamRecord &record) {
@@ -913,7 +912,7 @@ class Read: public Interval {
 };
 
 ostream &operator<< (ostream &os, const Read &r) {
-  os << r.chromosome << ":" << static_cast<const Transcript &>(r);
+  os << "(" << r.name << ") " << r.chromosome << ":" << r.getStart() << "-" << r.getEnd() << " (# hits: " << r.nHits << ")";
   return os;
 }
 
@@ -1289,13 +1288,15 @@ class IntervalList {
 			}
       cerr << "\t" << intervals.size() << " intervals found." << endl;
     }
-    void scan(Read &read, vector <size_t> &regions, vector <size_t> &selectedIntervals, IntervalListPosition &position, Strandedness strandedness) {
+    void scan(Read &read, vector <size_t> &regions, vector <size_t> &selectedIntervals, IntervalListPosition &position) {
       if (Globals::sorted) {
         if (chromosomes[position.chromosomeId] != read.getChromosome()) {
           if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) != unknownChromosomes.end()) return;
           for (position.chromosomeId = 0; (position.chromosomeId < chromosomes.size()) && (chromosomes[position.chromosomeId] != read.getChromosome()); position.chromosomeId++) ;
           if (position.chromosomeId == chromosomes.size()) {
-            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << "' (found in your reads) is not present in your annotation file." << endl;
+            if (read.getChromosome() != "*") {
+              cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << "' (found in your reads) is not present in your annotation file." << endl;
+            }
             unknownChromosomes.push_back(read.getChromosome());
             position.reset();
             return;
@@ -1308,7 +1309,9 @@ class IntervalList {
         auto         p   = bins.find(read.getChromosome());
         if (p == bins.end()) {
           if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) == unknownChromosomes.end()) {
-            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
+            if (read.getChromosome() != "*") {
+              cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
+            }
             unknownChromosomes.push_back(read.getChromosome());
           }
           return;
@@ -1340,7 +1343,6 @@ class IntervalList {
         id++;
       }
       evaluation.getFirst(regions);
-      //cout << "Evaluating " << regions.size() << " intervals." << endl;
       if (Globals::intervalStats) {
         evaluation.getIds(regions, selectedIntervals);
       }
@@ -1358,6 +1360,31 @@ class Reader {
     size_t alternativeHitId;
     Read read;
     bool over;
+
+    void parseCigar (string &unformatted, Cigar &formatted) {
+      int value = 0;
+      for (char c: unformatted) {
+        if ((c >= '0') && (c <= '9')) {
+          value *= 10;
+          value += (c - '0');
+        }
+        else {
+          formatted.push_back(make_pair(c, value));
+          value = 0;
+        }
+      }
+    }
+    void parseAlternativeHit (string &alternativeHitsUnformatted, Cigar &cigar) {
+      vector < string > alternativeHitsSplit, alternativeHitUnformatted;
+      split(alternativeHitsUnformatted, ';', alternativeHitsSplit);
+      for (string &s: alternativeHitsSplit) {
+        split(s, ',', alternativeHitUnformatted);
+        cigar.clear();
+        parseCigar(alternativeHitUnformatted[2], cigar);
+        record.getAlternativeHits().push_back( { alternativeHitUnformatted[0], alternativeHitUnformatted[1][0] == '+', stoul(alternativeHitUnformatted[1].substr(1)), cigar } );
+      }
+      record.setNHits(record.getAlternativeHits().size() + 1);
+    }
 
   public:
     Reader (string &fileName): file(fileName.c_str()), over(false), alternativeHitId(0) {
@@ -1377,7 +1404,6 @@ class Reader {
         alternativeHitId = 0;
       }
       else {
-        cout << alternativeHitId << "/" << record.getAlternativeHits().size() << endl;
         read.setNextAlternativeHit(record.getAlternativeHits()[alternativeHitId]);
         ++alternativeHitId;
       }
@@ -1395,19 +1421,6 @@ class SamReader: public Reader {
     SamReader (string &fileName): Reader(fileName) {
       lock_guard<mutex> lock(Globals::printMutex);
       cerr << "Reading SAM file " << fileName << endl;
-    }
-    void parseCigar (string &unformatted, Cigar &formatted) {
-      int value = 0;
-      for (char c: unformatted) {
-        if ((c >= '0') && (c <= '9')) {
-          value *= 10;
-          value += (c - '0');
-        }
-        else {
-          formatted.push_back(make_pair(c, value));
-          value = 0;
-        }
-      }
     }
     virtual void getNextRecord () {
       string line;
@@ -1439,21 +1452,15 @@ class SamReader: public Reader {
         size_t pos   = part.find(':');
         key = part.substr(0, pos);
         if (key == "NH") {
-          record.setNHits(stoul(part.substr(part.find(':', pos+1)+1)));
+          if (record.getAlternativeHits().empty()) {
+            record.setNHits(stoul(part.substr(part.find(':', pos+1)+1)));
+          }
         }
         else if (key == "XA") {
           value = part.substr(part.find(':', pos+1)+1);
-          split(value, ';', alternativeHitsUnformatted);
-          for (string &s: alternativeHitsUnformatted) {
-            split(s, ',', alternativeHitUnformatted);
-            cigar.clear();
-            parseCigar(alternativeHitUnformatted[2], cigar);
-            AlternativeHit alternativeHit = { alternativeHitUnformatted[0], alternativeHitUnformatted[1][0] == '+', stoul(alternativeHitUnformatted[1].substr(1)), cigar };
-            record.getAlternativeHits().push_back(alternativeHit);
-          }
+          parseAlternativeHit(value, cigar);
         }
       }
-      return;
     }
 };
 
@@ -1495,6 +1502,7 @@ class BamReader: public Reader {
       int32_t  v_32, size, chrId, pos, lReadName, lSeq, flags, nCigar;
       uint32_t v_u32, binMqNl, flagNc;
       float    v_f;
+      string   v_s;
       Cigar cigar;
       gzread(file, reinterpret_cast<char*>(&size), 4);
       if (gzeof(file)) {
@@ -1503,6 +1511,7 @@ class BamReader: public Reader {
         gzclose(file);
         return;
       }
+      record.clear();
       gzread(file, reinterpret_cast<char*>(&chrId), 4);
       if (chrId == -1) record.setChromosome(chromosomes.back());
       else record.setChromosome(chromosomes[chrId]);
@@ -1596,7 +1605,9 @@ class BamReader: public Reader {
               i += 4;
               break;
             case 'Z':
+              v_s.clear();
               while ((v_c = gzgetc(file)) != 0) {
+                v_s.push_back(v_c);
                 i++;
               }
               i++;
@@ -1606,7 +1617,14 @@ class BamReader: public Reader {
               return;
           }
         }
-        if (key == "NH") record.setNHits(v_u32);
+        if (key == "NH") {
+          if (record.getAlternativeHits().empty()) {
+            record.setNHits(v_u32);
+          }
+        }
+        else if (key == "XA") {
+          parseAlternativeHit(v_s, cigar);
+        }
       }
     }
 };
@@ -1707,11 +1725,11 @@ class Counter {
       rawCounts.clear();
       nHits = nReads = nUnique = nAmbiguous = nMultiple = nUnassigned = nRescued = 0;
     }
-    void read (string &f, Strandedness strandedness, StrandednessFunction strandednessFunction, ReadsFormat format) {
+    void read (string &f) {
       Reader *reader;
       fileName = f;
-      if      (format == ReadsFormat::BAM) reader = new BamReader(fileName);
-      else if (format == ReadsFormat::SAM) reader = new SamReader(fileName);
+      if      (Globals::format == ReadsFormat::BAM) reader = new BamReader(fileName);
+      else if (Globals::format == ReadsFormat::SAM) reader = new SamReader(fileName);
       else {
         if (fileName.size() < 4) {
           cerr << "Cannot deduce type from file name '" << fileName << "'.  Should be a .sam or .bam file.  Please specify it using the '-f' option." << endl;
@@ -1735,7 +1753,7 @@ class Counter {
         if ((Globals::strategy != Strategy::UNIQUE) || (read.getNHits() == 1)) {
           ++nHits;
           vector < size_t > regions, intervals;
-          intervalList.scan(read, regions, intervals, position, strandedness);
+          intervalList.scan(read, regions, intervals, position);
           addCount(read.getName(), regions, intervals, read.getNHits());
         }
         previousPos = read.getStart();
@@ -2076,7 +2094,7 @@ int main(int argc, char **argv) {
     Counter counter (intervalList);
     for (unsigned int i = 0; i < Globals::nInputs; i++) {
       counter.clear();
-      counter.read(readsFileNames[i], Globals::strandedness, Globals::strandednessFunction, Globals::format);
+      counter.read(readsFileNames[i]);
       counter.dump();
       table.addCounter(counter);
     }
@@ -2096,7 +2114,7 @@ int main(int argc, char **argv) {
           ++i;
           m1.unlock();
           counter.clear();
-          counter.read(readsFileNames[thisI], Globals::strandedness, Globals::strandednessFunction, Globals::format);
+          counter.read(readsFileNames[thisI]);
           m2.lock();
           counter.dump();
           m2.unlock();
