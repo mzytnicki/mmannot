@@ -586,42 +586,24 @@ typedef struct {
 typedef vector < AlternativeHit > AlternativeHits;
 
 
-class XamRecord {
-  protected:
-    string name, chromosome;
-    Position start;
-    unsigned int flags, nHits;
-    AlternativeHits alternativeHits;
-    Cigar cigar;
-    size_t size;
-    bool over;
-
-  public:
-    XamRecord (): start(UNKNOWN), nHits(1), over(false) { }
-    void clear () {
-      cigar.clear();
-      alternativeHits.clear();
-    }
-    void setChromosome (const string &c) { chromosome = c; }
-    void setStart (Position s) { start = s; }
-    void setName (const string &n) { name = n; }
-    void setSize (size_t s) { size = s; }
-    void setFlags (unsigned int f) { flags = f; }
-    void setCigar (const Cigar &g) { cigar = g; }
-    void setNHits (unsigned int n) { nHits = n; }
-    void setAlternativeHits (const AlternativeHits &a) { alternativeHits = a; }
-    string &getChromosome() { return chromosome; }
-    Position getStart() { return start; }
-    string &getName () { return name; }
-    Cigar &getCigar () { return cigar; }
-    size_t getSize () const { return size; }
-    AlternativeHits &getAlternativeHits () { return alternativeHits; }
-    bool isMapped () const { return ((flags & 0x4) == 0);}
-    bool getStrand () const { return ((flags & 0x10) == 0);}
-    bool isOver () const { return over; }
-    void setOver () { over = true; }
-    unsigned int getNHits () const { return nHits; }
-};
+typedef struct XamRecord {
+  string name, chromosome;
+  Position start;
+  unsigned int flags, nHits, nMismatches;
+  AlternativeHits alternativeHits;
+  Cigar cigar;
+  size_t size;
+  bool isMapped, over, strand;
+  XamRecord (): start(UNKNOWN), nHits(1), over(false) { }
+  void clear () {
+    cigar.clear();
+    alternativeHits.clear();
+  }
+  void setFlags (unsigned int) {
+    isMapped = ((flags & 0x4) == 0);
+    strand   = ((flags & 0x10) == 0);
+  }
+} XamRecord;
 
 
 class Interval {
@@ -865,6 +847,7 @@ class Read: public Interval {
     AlternativeHits alternativeHits;
     void parseCigar (Cigar &cigar) {
       if ((cigar.size() == 1) && (cigar.front().first == '*')) return;
+      end = start;
       for (auto &part: cigar) {
         char c = part.first;
         int  v = part.second;
@@ -888,14 +871,14 @@ class Read: public Interval {
     }
   public:
     void reset (XamRecord &record) {
-      start           = record.getStart();
-      end             = record.getStart();
-      name            = record.getName();
-      chromosome      = record.getChromosome();
-      nHits           = record.getNHits();
-      alternativeHits = record.getAlternativeHits();
-      strand          = Globals::strandednessFunction(record.getStrand());
-      parseCigar(record.getCigar());
+      start           = record.start;
+      end             = record.start;
+      name            = record.name;
+      chromosome      = record.chromosome;
+      nHits           = record.nHits;
+      alternativeHits = record.alternativeHits;
+      strand          = Globals::strandednessFunction(record.strand);
+      parseCigar(record.cigar);
     }
     Read () {}
     Read (XamRecord &record) {
@@ -1382,16 +1365,24 @@ class Reader {
         }
       }
     }
-    void parseAlternativeHit (string &alternativeHitsUnformatted, Cigar &cigar) {
+    void parseAlternativeHit (string &alternativeHitsUnformatted) {
+      AlternativeHit alternativeHit;
       vector < string > alternativeHitsSplit, alternativeHitUnformatted;
       split(alternativeHitsUnformatted, ';', alternativeHitsSplit);
       for (string &s: alternativeHitsSplit) {
-        split(s, ',', alternativeHitUnformatted);
-        cigar.clear();
-        parseCigar(alternativeHitUnformatted[2], cigar);
-        record.getAlternativeHits().push_back( { alternativeHitUnformatted[0], alternativeHitUnformatted[1][0] == '+', stoul(alternativeHitUnformatted[1].substr(1)), cigar } );
+        if (! s.empty()) {
+          split(s, ',', alternativeHitUnformatted);
+          unsigned int nMismatches = stoul(alternativeHitUnformatted[3]);
+          if (nMismatches == record.nMismatches) {
+            alternativeHit.chromosome = alternativeHitUnformatted[0];
+            alternativeHit.strand     = (alternativeHitUnformatted[1][0] == '+');
+            alternativeHit.start      = stoul(alternativeHitUnformatted[1].substr(1));
+            parseCigar(alternativeHitUnformatted[2], alternativeHit.cigar);
+            record.alternativeHits.push_back(alternativeHit);
+          }
+        }
       }
-      record.setNHits(record.getAlternativeHits().size() + 1);
+      record.nHits = record.alternativeHits.size() + 1;
     }
 
   public:
@@ -1406,13 +1397,13 @@ class Reader {
       return record;
     }
     void gotoNextRead () {
-      if (alternativeHitId == record.getAlternativeHits().size()) {
+      if (alternativeHitId == record.alternativeHits.size()) {
         getNextRecord();
         read.reset(record);
         alternativeHitId = 0;
       }
       else {
-        read.setNextAlternativeHit(record.getAlternativeHits()[alternativeHitId]);
+        read.setNextAlternativeHit(record.alternativeHits[alternativeHitId]);
         ++alternativeHitId;
       }
     }
@@ -1447,26 +1438,28 @@ class SamReader: public Reader {
       assert(splittedLine.size() >= 12);
       record.clear();
       record.setFlags(stoi(splittedLine[1]));
-      record.setChromosome(splittedLine[2]);
-      record.setStart(stoul(splittedLine[3]));
-      record.setName(splittedLine[0]);
-      record.setSize(splittedLine[9].size());
-      record.setNHits(1);
-      parseCigar(splittedLine[5], cigar);
-      record.setCigar(cigar);
+      record.chromosome = splittedLine[2];
+      record.start      = stoul(splittedLine[3]);
+      record.name       = splittedLine[0];
+      record.size       = splittedLine[9].size();
+      record.nHits      = 1;
+      parseCigar(splittedLine[5], record.cigar);
       string key, value;
       for (unsigned int i = 11; i < splittedLine.size(); i++) {
         string &part = splittedLine[i];
         size_t pos   = part.find(':');
         key = part.substr(0, pos);
         if (key == "NH") {
-          if (record.getAlternativeHits().empty()) {
-            record.setNHits(stoul(part.substr(part.find(':', pos+1)+1)));
+          if (record.alternativeHits.empty()) {
+            record.nHits = stoul(part.substr(part.find(':', pos+1)+1));
           }
+        }
+        else if (key == "NM") {
+          record.nMismatches = stoul(part.substr(part.find(':', pos+1)+1));
         }
         else if (key == "XA") {
           value = part.substr(part.find(':', pos+1)+1);
-          parseAlternativeHit(value, cigar);
+          parseAlternativeHit(value);
         }
       }
     }
@@ -1476,19 +1469,26 @@ class BamReader: public Reader {
   protected:
     vector <string> chromosomes;
     gzFile file;
+
   public:
     BamReader (string &fileName): Reader(fileName) {
       lock_guard<mutex> lock(Globals::printMutex);
       cerr << "Reading BAM file " << fileName << endl;
-      char buffer[1000000];
+      static const int BUFFER_SIZE = 10000;
+      int bufferSize = BUFFER_SIZE;
+      char buffer[100000];
       int32_t tlen, nChrs, size;
       file = gzopen(fileName.c_str(), "rb");
       if (! file) {
         cerr << "Cannot open file '" << fileName << "'." << endl;
-        return;
+        exit(EXIT_FAILURE);
       }
       gzread(file, buffer, 4);
       buffer[4] = 0;
+      if (strcmp(buffer, "BAM\1") != 0) {
+        cerr << "Problem with file '" << fileName << "': file does not look like a BAM file (missing magic string, got '" << buffer << "' instead of 'BAM\\1')." << endl;
+        exit(EXIT_FAILURE);
+      }
       gzread(file, reinterpret_cast<char*>(&tlen), 4);
       gzread(file, buffer, tlen);
       gzread(file, reinterpret_cast<char*>(&nChrs), 4);
@@ -1511,20 +1511,18 @@ class BamReader: public Reader {
       uint32_t v_u32, binMqNl, flagNc;
       float    v_f;
       string   v_s;
-      Cigar cigar;
       gzread(file, reinterpret_cast<char*>(&size), 4);
       if (gzeof(file)) {
         over = true;
-        record.setOver();
+        record.over = true;
         gzclose(file);
         return;
       }
       record.clear();
       gzread(file, reinterpret_cast<char*>(&chrId), 4);
-      if (chrId == -1) record.setChromosome(chromosomes.back());
-      else record.setChromosome(chromosomes[chrId]);
+      record.chromosome = (chrId == -1)? chromosomes.back(): chromosomes[chrId];
       gzread(file, reinterpret_cast<char*>(&pos), 4);
-      record.setStart(++pos);
+      record.start = ++pos;
       gzread(file, reinterpret_cast<char*>(&binMqNl), 4);
       lReadName = binMqNl & 0xff;
       gzread(file, reinterpret_cast<char*>(&flagNc), 4);
@@ -1532,23 +1530,22 @@ class BamReader: public Reader {
       nCigar = flagNc & 0xffff;
       record.setFlags(flags);
       gzread(file, reinterpret_cast<char*>(&lSeq), 4);
-      record.setSize(lSeq);
+      record.size = lSeq;
       gzread(file, buffer, 4);
       gzread(file, buffer, 4);
       gzread(file, buffer, 4);
       gzread(file, buffer, lReadName);
-      record.setName(buffer);
-      cigar.reserve(nCigar);
+      record.name = buffer;
+      record.cigar.reserve(nCigar);
       for (int i = 0; i < nCigar; i++) {
         gzread(file, reinterpret_cast<char*>(&v_u32), 4);
         uint32_t s = v_u32 >> 4;
         char op = BAM_CIGAR_LOOKUP[v_u32 & ((1 << 4) - 1)];
-        cigar.push_back(make_pair(op, s));
+        record.cigar.push_back(make_pair(op, s));
       }
-      record.setCigar(cigar);
       gzread(file, buffer, (lSeq+1)/2);
       gzread(file, buffer, lSeq);
-      record.setNHits(1);
+      record.nHits = 1;
       string key(2, 0);
       char c;
       for (int32_t i = 33+lReadName+4*nCigar+(lSeq+1)/2+lSeq; i < size; ) {
@@ -1626,12 +1623,15 @@ class BamReader: public Reader {
           }
         }
         if (key == "NH") {
-          if (record.getAlternativeHits().empty()) {
-            record.setNHits(v_u32);
+          if (record.alternativeHits.empty()) {
+            record.nHits = v_u32;
           }
         }
+        else if (key == "NM") {
+          record.nMismatches = v_u32;
+        }
         else if (key == "XA") {
-          parseAlternativeHit(v_s, cigar);
+          parseAlternativeHit(v_s);
         }
       }
     }
