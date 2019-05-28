@@ -66,7 +66,6 @@ const static string EMPTY_STRING { "" };
 const static Position binSize = 16384;
 
 namespace Globals {
-  bool sorted;
   float overlap;
   Strandedness strandedness;
   StrandednessFunction strandednessFunction;
@@ -1262,16 +1261,14 @@ class IntervalList {
           chrStarts[chromosomeId = intervals[i].getChromosomeId()] = i;
         }
       }
-			if (! Globals::sorted) {
-				//cerr << "Not all sorted" << endl;
-				for (unsigned int i = 0; i < intervals.size(); i++) {
-					vector<size_t> &chrBins    = bins[chromosomes[intervals[i].getChromosomeId()]];
-					unsigned        bin        = intervals[i].getEnd() / binSize;
-					if (chrBins.size() <= bin) {
-						//cerr << "Adding " << chrBins.size() << "-" << bin << ": " << i << endl;
-						chrBins.insert(chrBins.end(), bin-chrBins.size()+1, i);
-					}
-				}
+      //cerr << "Not all sorted" << endl;
+      for (unsigned int i = 0; i < intervals.size(); i++) {
+        vector<size_t> &chrBins    = bins[chromosomes[intervals[i].getChromosomeId()]];
+        unsigned        bin        = intervals[i].getEnd() / binSize;
+        if (chrBins.size() <= bin) {
+          //cerr << "Adding " << chrBins.size() << "-" << bin << ": " << i << endl;
+          chrBins.insert(chrBins.end(), bin-chrBins.size()+1, i);
+        }
 			}
       if (intervals.empty()) {
         cerr << "Error, the annotation file has not been parsed properly!\nPlease check that your annotation file is not empty, and that your configuration file matches your annotation file.\nIf you have trouble designing a configuration file, please use the companion tool 'createConfigFile'.\n";
@@ -1280,37 +1277,20 @@ class IntervalList {
       cerr << "\t" << intervals.size() << " intervals found." << endl;
     }
     void scan(Read &read, vector <size_t> &regions, vector <size_t> &selectedIntervals, IntervalListPosition &position) {
-      if (Globals::sorted) {
-        if (chromosomes[position.chromosomeId] != read.getChromosome()) {
-          if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) != unknownChromosomes.end()) return;
-          for (position.chromosomeId = 0; (position.chromosomeId < chromosomes.size()) && (chromosomes[position.chromosomeId] != read.getChromosome()); position.chromosomeId++) ;
-          if (position.chromosomeId == chromosomes.size()) {
-            if (read.getChromosome() != "*") {
-              cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << "' (found in your reads) is not present in your annotation file." << endl;
-            }
-            unknownChromosomes.push_back(read.getChromosome());
-            position.reset();
-            return;
+      unsigned int bin = read.getStart() / binSize;
+      auto         p   = bins.find(read.getChromosome());
+      if (p == bins.end()) {
+        if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) == unknownChromosomes.end()) {
+          if (read.getChromosome() != "*") {
+            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
           }
-          position.intervalId = chrStarts[position.chromosomeId];
+          unknownChromosomes.push_back(read.getChromosome());
         }
+        return;
       }
-      else {
-        unsigned int bin = read.getStart() / binSize;
-        auto         p   = bins.find(read.getChromosome());
-        if (p == bins.end()) {
-          if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) == unknownChromosomes.end()) {
-            if (read.getChromosome() != "*") {
-              cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
-            }
-            unknownChromosomes.push_back(read.getChromosome());
-          }
-          return;
-        }
-        bin = min<unsigned int>(bin, p->second.size()-1);
-        position.intervalId   = p->second[bin];
-        position.chromosomeId = intervals[position.intervalId].getChromosomeId();
-      }
+      bin = min<unsigned int>(bin, p->second.size()-1);
+      position.intervalId   = p->second[bin];
+      position.chromosomeId = intervals[position.intervalId].getChromosomeId();
       while ((position.intervalId < intervals.size()) && (intervals[position.intervalId].getChromosomeId() == position.chromosomeId) && (intervals[position.intervalId].isBefore(read))) {
         position.intervalId++;
       }
@@ -1900,7 +1880,6 @@ inline void printUsage () {
   cerr <<     "\t\t-s strand: string (U, F, R, FR, RF, FF, defaut: F) (use several strand types if the library strategies differ)\n";
   cerr <<     "\t\t-f format (SAM or BAM): format of the read files (default: guess from file extension)\n";
   cerr <<     "\t\t-l integer: overlap type (<0: read is included, <1: % overlap, otherwise: # nt, default: " << Globals::overlap << ")\n";
-  cerr <<     "\t\t-u: reads are unsorted (default: false)\n";
   cerr <<     "\t\t-d integer: upstream region size (default: " << Globals::upstreamSize << ")\n";
   cerr <<     "\t\t-D integer: downstream region size (default: " << Globals::downstreamSize << ")\n";
   cerr <<     "\t\t-y string: quantification strategy, valid values are: default, unique, random, ratio (default: default)\n";
@@ -1919,7 +1898,6 @@ inline void printVersion () {
 
 int main(int argc, char **argv) {
   Globals::overlap                   = -1.0;
-  Globals::sorted                    = true;
   Globals::rescueThreshold           = 1.0;
   Globals::intervalOverlapFunction   = intervalInclusion;
   Globals::printReadStatsFunction    = printReadStatsVoid;
@@ -2032,9 +2010,6 @@ int main(int argc, char **argv) {
           printUsage();
           return EXIT_FAILURE;
         }
-      }
-      else if (s == "-u") {
-        Globals::sorted = false;
       }
       else if (s == "-v") {
         printVersion();
