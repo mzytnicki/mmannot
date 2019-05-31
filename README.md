@@ -54,8 +54,7 @@ Main options:
 * `-s` *strand*: can be:
   * for paired-end reads: `U` (unknown), `FR` (forward-reverse), `RF` (reverse-forward), `FF` (forward-forward);
   * for single-end reads: `U` (unknown), `F` (forward), `R` (reverse);
-  * Default: `F`. (you can provide different strand types if the sequencing strategies differ in your samples)
-* `-u`: use this option if your reads are not sorted
+  * Default: `F`.
 * `-f` format (`SAM` or `BAM`): format of the read input files
 * `-l` number overlap type (see [*infra*](#overlap)). Default: `-1`.
 
@@ -187,17 +186,26 @@ Type:
 
 where `annotation.gtf` is your annotation file, and `config.txt` is the configuration file (created by `createConfigFile`).
 
-Then, follow the instructions, that should be (hopefully) clear enough for you to create the configuration file, based on your annotation.
+Then, follow the instructions, which should be (hopefully) clear enough for you to create the configuration file, based on your annotation.
 
 
 ### Reads files
 
 The reads should be given in SAM or BAM format.
-If they are not sorted by position, be sure to use the `-u` parameter.
 The reads can be single end or paired-end.
+mmannot must be informed about the number of times a read maps.
+The usual read mapping tools can use two strategies to do so.
 
-This tool uses the `NH` flag, that provides the number of hits for each read.
-Most mapping tools (at least Bowtie and BWA) do not provide this flag.
+#### Reads mapped with BWA
+
+BWA provides all the possible hits in the last field, with the `XA` tag.
+mmannot works directly with the reads mapped by BWA.
+
+
+#### Reads mapped with Bowtie or Bowtie2
+
+Bowtie does not provides the number of times a read maps.
+You should then add the `NH` flag, that provides the number of hits for each read.
 There is a companion tool, `addNH`, that add this flag __on unsorted reads only__ (i.e. right after the mapping).
 See [*infra*](#add-the-nh-tag) for more about this tool.
 
@@ -276,7 +284,10 @@ The way a read *R* is mapped to a feature *A* depends on the `-l` *n* value:
 
 #### Add the `NH` tag
 
-mmannot needs the `NH` tag in the SAM/BAM file to work.  This tag provide the number of hits for each read.  Unfortunately, most tools do not provide it, but it is not difficult to add it.  We provided a simple tool, `addNH`, to add it __in the unsorted SAM file__.
+mmannot needs the `NH` tag in the SAM/BAM file to work.
+This tag provide the number of hits for each read.
+Unfortunately, some tools, such as Bowtie do not provide it, but it is not difficult to add it.
+We provided a simple tool, `addNH`, to add it __in the unsorted SAM file__.
 
 For instance, if you use bowtie1, you can use it this way:
 
