@@ -1290,7 +1290,7 @@ class IntervalList {
       if (p == bins.end()) {
         if (find(unknownChromosomes.begin(), unknownChromosomes.end(), read.getChromosome()) == unknownChromosomes.end()) {
           if (read.getChromosome() != "*") {
-            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << " (found in your reads) is not present in your annotation file." << endl;
+            cerr << "\t\tWarning!  Chromosome '" << read.getChromosome() << "' (found in your reads) is not present in your annotation file." << endl;
           }
           unknownChromosomes.push_back(read.getChromosome());
         }
