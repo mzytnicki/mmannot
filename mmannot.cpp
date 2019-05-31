@@ -175,6 +175,10 @@ static inline string rtrimTo(const string &sin, char delim) {
   return sout;
 }
 
+inline bool fileExists (const string &fileName) {
+    ifstream f(fileName.c_str());
+    return f.good();
+}
 
 template<typename T>
 void setUnique (T &t) {
@@ -230,6 +234,10 @@ class Config {
 
   public:
     void parse (string &fileName) {
+      if (! fileExists(fileName)) {
+        cerr << "Error, configuration file '" << fileName << "' does not exists!" << endl;
+        exit(EXIT_FAILURE);
+      }
       ifstream file(fileName.c_str());
       string   line, key, value, reg;
       size_t   pos;
@@ -237,10 +245,6 @@ class Config {
       bool     inIntrons  = false;
       bool     inVicinity = false;
       bool     inOrder    = false;
-      if (! file.good()) {
-        cerr << "Error, configuration file '" << fileName << "' does not exists!" << endl;
-        exit(EXIT_FAILURE);
-      }
       while (getline(file, line)) {
         trim(line);
         if ((! line.empty()) && (line[0] != '#')) {
@@ -1087,6 +1091,10 @@ class IntervalList {
 
   public:
     IntervalList(string &fileName) {
+      if (! fileExists(fileName)) {
+        cerr << "Error, Annotation file '" << fileName << "' does not exists!" << endl;
+        exit(EXIT_FAILURE);
+      }
       ifstream file (fileName.c_str());
       unordered_map < string, unsigned int> geneHash;
       unordered_set < string > unused;
@@ -1367,7 +1375,7 @@ class Reader {
 
   public:
     Reader (string &fileName): file(fileName.c_str()), over(false), alternativeHitId(0) {
-      if (! file.good()) {
+      if (! fileExists(fileName)) {
         cerr << "Error, file '" << fileName << "' does not exists!" << endl;
         exit(EXIT_FAILURE);
       }
@@ -1454,9 +1462,8 @@ class BamReader: public Reader {
     BamReader (string &fileName): Reader(fileName) {
       lock_guard<mutex> lock(Globals::printMutex);
       cerr << "Reading BAM file " << fileName << endl;
-      static const int BUFFER_SIZE = 10000;
-      int bufferSize = BUFFER_SIZE;
-      char buffer[100000];
+      static const int BUFFER_SIZE = 1000000;
+      char buffer[BUFFER_SIZE];
       int32_t tlen, nChrs, size;
       file = gzopen(fileName.c_str(), "rb");
       if (! file) {
