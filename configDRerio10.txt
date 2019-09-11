@@ -16,6 +16,7 @@ Order:
 *:snRNA
 *:rRNA
 *:lincRNA
+*:piRNA
 *:pseudogene
 *:gene -
 *:intron

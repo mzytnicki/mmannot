@@ -16,6 +16,7 @@ ensembl:snoRNA
 ensembl:snRNA
 ensembl:rRNA
 ensembl:lincRNA
+piRNA:piRNA
 ensembl:pseudogene
 ensembl:gene -
 ensembl:intron

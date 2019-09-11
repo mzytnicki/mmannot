@@ -16,6 +16,7 @@ miRNA:gene
 snoRNA:gene
 snRNA:gene
 lincRNA:gene
+piRNA:gene
 rRNA:gene
 misc_RNA:gene
 transcribed_processed_pseudogene:gene

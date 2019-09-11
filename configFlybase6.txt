@@ -17,6 +17,7 @@ FlyBase:snRNA
 FlyBase:rRNA
 FlyBase:ncRNA
 FlyBase:pre_miRNA
+piRNA:piRNA
 FlyBase:pseudogene
 FlyBase:gene -
 FlyBase:intron
