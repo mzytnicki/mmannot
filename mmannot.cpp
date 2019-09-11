@@ -391,21 +391,21 @@ class Config {
 
     size_t checkIntrons (const string &source, const string &type) {
       for (auto &p: introns) {
-        if ((get<0>(p) == source) && (get<1>(p) == type)) return get<2>(p);
+        if (((get<0>(p) == "*") || (get<0>(p) == source)) && ((get<1>(p) == "*") || (get<1>(p) == type))) return get<2>(p);
       }
       return NO_ID;
     }
 
     size_t checkUpstream (const string &source, const string &type) {
       for (auto &p: vicinity) {
-        if ((get<0>(p) == source) && (get<1>(p) == type)) return get<2>(p);
+        if (((get<0>(p) == "*") || (get<0>(p) == source)) && ((get<1>(p) == "*") || (get<1>(p) == type))) return get<2>(p);
       }
       return NO_ID;
     }
 
     size_t checkDownstream (const string &source, const string &type) {
       for (auto &p: vicinity) {
-        if ((get<0>(p) == source) && (get<1>(p) == type)) return get<3>(p);
+        if (((get<0>(p) == "*") || (get<0>(p) == source)) && ((get<1>(p) == "*") || (get<1>(p) == type))) return get<3>(p);
       }
       return NO_ID;
     }
@@ -1360,29 +1360,34 @@ class Reader {
       while (getline(alternativeHitsUnformattedStream, s, ';')) {
         if (! s.empty()) {
           AlternativeHit alternativeHit;
-          stringstream alternativeHitUnformattedStream(s);
-          getline(alternativeHitUnformattedStream, alternativeHitUnformatted, ',');
-          for (unsigned int i = 0; i < 4; ++i, getline(alternativeHitUnformattedStream, alternativeHitUnformatted, ',')) {
-            switch (i) {
-              case 0:
-                alternativeHit.chromosome = alternativeHitUnformatted;
-                break;
-              case 1:
-                alternativeHit.strand = (alternativeHitUnformatted[0] == '+');
-                alternativeHit.start  = stoul(alternativeHitUnformatted.substr(1));
-                break;
-              case 2:
-                cigar = alternativeHitUnformatted;
-                break;
-              case 3:
-                nMismatches = stoul(alternativeHitUnformatted);
-                if (nMismatches == record.nMismatches) {
-                  parseCigar(cigar, alternativeHit.cigar);
-                  record.alternativeHits.emplace_back(alternativeHit);
+          try {
+            stringstream alternativeHitUnformattedStream(s);
+            getline(alternativeHitUnformattedStream, alternativeHitUnformatted, ',');
+            for (unsigned int i = 0; i < 4; ++i, getline(alternativeHitUnformattedStream, alternativeHitUnformatted, ',')) {
+              switch (i) {
+                case 0:
+                  alternativeHit.chromosome = alternativeHitUnformatted;
+                  break;
+                case 1:
+                  alternativeHit.strand = (alternativeHitUnformatted[0] == '+');
+                  alternativeHit.start  = stoul(alternativeHitUnformatted.substr(1));
+                  break;
+                case 2:
+                  cigar = alternativeHitUnformatted;
+                  break;
+                case 3:
+                  nMismatches = stoul(alternativeHitUnformatted);
+                  if (nMismatches == record.nMismatches) {
+                    parseCigar(cigar, alternativeHit.cigar);
+                    record.alternativeHits.emplace_back(alternativeHit);
+                  }
+                  break;
                 }
-                break;
               }
-            }
+          }
+          catch (...) {
+            cerr << "Warning!  Problem while parsing an \"XA\" tag, which is probably too long:\n" << alternativeHitsUnformatted << "\n";
+          }
         }
       }
       record.nHits = record.alternativeHits.size() + 1;
