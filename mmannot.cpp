@@ -293,10 +293,10 @@ class Config {
             vicinity.push_back(make_tuple(key, value, NO_ID, NO_ID));
           }
           else if (inOrder) {
-            vector < string > fields;
-            split(line, ',', fields);
+            stringstream lineStream(line);
+            string field;
             vector < AnnotationType > thisOrder;
-            for (string field: fields) {
+            while(getline(lineStream, field, ',')) {
               string rest, strandStr;
               Strand strand = Strand::ALL;
               if (split(field, ' ', rest, strandStr)) {
@@ -902,7 +902,7 @@ class Read: public Interval {
 };
 
 ostream &operator<< (ostream &os, const Read &r) {
-  os << "(" << r.name << ") " << r.chromosome << ":" << r.getStart() << "-" << r.getEnd() << " (# hits: " << r.nHits << ")";
+  os << "(" << r.name << ") " << r.chromosome << ":" << r.getStart() << "-" << r.getEnd() << " (" << (r.strand? '+': '-') << ") (# hits: " << r.nHits << ")";
   return os;
 }
 
@@ -1354,20 +1354,35 @@ class Reader {
       }
     }
     void parseAlternativeHit (string &alternativeHitsUnformatted) {
-      AlternativeHit alternativeHit;
-      vector < string > alternativeHitsSplit, alternativeHitUnformatted;
-      split(alternativeHitsUnformatted, ';', alternativeHitsSplit);
-      for (string &s: alternativeHitsSplit) {
+      stringstream alternativeHitsUnformattedStream(alternativeHitsUnformatted);
+      string s, alternativeHitUnformatted, cigar;
+      unsigned int nMismatches;
+      while (getline(alternativeHitsUnformattedStream, s, ';')) {
         if (! s.empty()) {
-          split(s, ',', alternativeHitUnformatted);
-          unsigned int nMismatches = stoul(alternativeHitUnformatted[3]);
-          if (nMismatches == record.nMismatches) {
-            alternativeHit.chromosome = alternativeHitUnformatted[0];
-            alternativeHit.strand     = (alternativeHitUnformatted[1][0] == '+');
-            alternativeHit.start      = stoul(alternativeHitUnformatted[1].substr(1));
-            parseCigar(alternativeHitUnformatted[2], alternativeHit.cigar);
-            record.alternativeHits.push_back(alternativeHit);
-          }
+          AlternativeHit alternativeHit;
+          stringstream alternativeHitUnformattedStream(s);
+          getline(alternativeHitUnformattedStream, alternativeHitUnformatted, ',');
+          for (unsigned int i = 0; i < 4; ++i, getline(alternativeHitUnformattedStream, alternativeHitUnformatted, ',')) {
+            switch (i) {
+              case 0:
+                alternativeHit.chromosome = alternativeHitUnformatted;
+                break;
+              case 1:
+                alternativeHit.strand = (alternativeHitUnformatted[0] == '+');
+                alternativeHit.start  = stoul(alternativeHitUnformatted.substr(1));
+                break;
+              case 2:
+                cigar = alternativeHitUnformatted;
+                break;
+              case 3:
+                nMismatches = stoul(alternativeHitUnformatted);
+                if (nMismatches == record.nMismatches) {
+                  parseCigar(cigar, alternativeHit.cigar);
+                  record.alternativeHits.emplace_back(alternativeHit);
+                }
+                break;
+              }
+            }
         }
       }
       record.nHits = record.alternativeHits.size() + 1;
