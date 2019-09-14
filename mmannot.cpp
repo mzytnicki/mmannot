@@ -1354,6 +1354,7 @@ class Reader {
       }
     }
     void parseAlternativeHit (string &alternativeHitsUnformatted) {
+      if (alternativeHitsUnformatted == "0") return;
       stringstream alternativeHitsUnformattedStream(alternativeHitsUnformatted);
       string s, alternativeHitUnformatted, cigar;
       unsigned int nMismatches;
