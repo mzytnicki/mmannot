@@ -30,6 +30,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <cmath>
 #include <locale>
 #include <libgen.h>
