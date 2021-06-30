@@ -8,8 +8,10 @@ endif
 
 ifdef DEBUG
 	CFLAGS += -O0 -g -ggdb
+else ifdef PROF
+		CFLAGS += -O3 -g -pg
 else
-	CFLAGS += -O3
+		CFLAGS += -O3
 endif
 
 all: addNH mmannot

@@ -915,7 +915,7 @@ class Gene: public Interval, public PlacedElement {
     Interval upstream, downstream;
   public:
     Gene (const string &i, const string &s, const string &t, Position st, Position en, Strand str, unsigned int ci): Interval(st, en), PlacedElement(str, ci), id(i), source(s), type(t), mergedTranscript(st, en) { }
-    Gene (GtfLineParser &line, unsigned int c): Gene(line.hasTag("gene_id")? line.getTag("gene_id").front(): (line.hasTag("ID")? line.getTag("ID").front(): rtrimTo(line.getTag("Parent").front(), '.')), line.getSource(), line.getType(), line.getStart(), line.getEnd(), line.getStrand(), c) { }
+    Gene (GtfLineParser &line, unsigned int c): Gene(line.hasTag("gene_id")? line.getTag("gene_id").front(): (line.hasTag("ID")? line.getTag("ID").front(): (line.hasTag("transcript_id")? line.getTag("transcript_id").front(): rtrimTo(line.getTag("Parent").front(), '.'))), line.getSource(), line.getType(), line.getStart(), line.getEnd(), line.getStrand(), c) { }
     string &getId ()     { return id; }
     string &getSource () { return source; }
     string &getType ()   { return type; }
@@ -1154,8 +1154,9 @@ class IntervalList {
           }
           else if (parsedLine.getType() == "exon") {
             string geneId;
-            if      (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
-            else if (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
+            if      (parsedLine.hasTag("Parent"))        geneId = parsedLine.getTag("Parent").front();
+            else if (parsedLine.hasTag("gene_id"))       geneId = parsedLine.getTag("gene_id").front();
+            else if (parsedLine.hasTag("transcript_id")) geneId = parsedLine.getTag("transcript_id").front();
             else {
               cerr << "Warning, cannot deduce exon id at line " << cpt << ": '" << line << "'." << endl;
             }
@@ -1175,8 +1176,9 @@ class IntervalList {
           }
           else if (parsedLine.getType() == "CDS") {
             string geneId;
-            if      (parsedLine.hasTag("gene_id")) geneId = parsedLine.getTag("gene_id").front();
-            else if (parsedLine.hasTag("Parent"))  geneId = parsedLine.getTag("Parent").front();
+            if      (parsedLine.hasTag("gene_id"))       geneId = parsedLine.getTag("gene_id").front();
+            else if (parsedLine.hasTag("Parent"))        geneId = parsedLine.getTag("Parent").front();
+            else if (parsedLine.hasTag("transcript_id")) geneId = parsedLine.getTag("transcript_id").front();
             else {
               cerr << "Warning, cannot deduce CDS parent id at line " << cpt << ": '" << line << "'." << endl;
             }
@@ -1200,8 +1202,9 @@ class IntervalList {
           }
           else if (Globals::config->getOrder(parsedLine.getSource(), parsedLine.getType(), parsedLine.getStrand()) != NO_ID) {
             string id;
-            if      (parsedLine.hasTag("ID"))      id = parsedLine.getTag("ID").front();
-            else if (parsedLine.hasTag("gene_id")) id = parsedLine.getTag("gene_id").front();
+            if      (parsedLine.hasTag("ID"))            id = parsedLine.getTag("ID").front();
+            else if (parsedLine.hasTag("gene_id"))       id = parsedLine.getTag("gene_id").front();
+            else if (parsedLine.hasTag("transcript_id")) id = parsedLine.getTag("transcript_id").front();
             else {
               if (parsedLine.hasTag("Parent")) id = parsedLine.getTag("Parent").front() + "_" + parsedLine.getType();
               else {
