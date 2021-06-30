@@ -1,4 +1,4 @@
-#!/usr/bin/env python 
+#!/usr/bin/env python3 
 
 import sys, argparse
 
@@ -11,7 +11,7 @@ parser.add_argument('-o', '--output', action="store", type=str, dest="outputFile
 parameters = parser.parse_args()
 
 if parameters.fileFormat != None:
-    fileFormat = uppercase(parameters.fileFormat)
+    fileFormat = parameters.fileFormat.upper()
 elif parameters.inputFileName.endswith("gtf"):
     fileFormat = "GTF"
 elif parameters.inputFileName.endswith("gff"):
@@ -101,7 +101,7 @@ class Annotations (object):
         displayToId = {}
         cpt   = 1
         stack = [(0, 0)]
-        print "==="
+        print("===")
         while stack:
             id, offset = stack.pop()
             annotation = self.annotations[id]
@@ -129,17 +129,17 @@ class Annotations (object):
         while True:
             displayToId = annotations.display(exon, hasExonOnly, cds, hasCdsOnly, utr, hasUtrOnly, alreadyChosen)
             try:
-                chosen = int(input("%s (type '0' if none): " % (message)))
+                chosen = int(eval(input("%s (type '0' if none): " % (message))))
                 if chosen == 0:
                     return alreadyChosen
                 if chosen not in displayToId:
-                    print "Please type a valid number"
+                    print("Please type a valid number")
                 else:
                     alreadyChosen.append(displayToId[chosen])
-                    if len(displayToId.keys()) == 1:
+                    if len(list(displayToId.keys())) == 1:
                         return alreadyChosen
             except ValueError:
-                print "Please type a valid number"
+                print("Please type a valid number")
 
     def findParent (self, childId):
         for parentId, annotation in enumerate(self.annotations):
@@ -162,27 +162,27 @@ class Annotations (object):
         while True:
             displayToId = annotations.display(True, False, True, False, True, False, alreadyChosen, True)
             try:
-                chosen = int(input("Select the next item (type '0' if over): "))
+                chosen = int(eval(input("Select the next item (type '0' if over): ")))
                 if chosen == 0:
                     return order
                 if chosen not in displayToId:
-                    print "Please type a valid number"
+                    print("Please type a valid number")
                 else:
                     order[-1].append(displayToId[chosen])
                     alreadyChosen.append(displayToId[chosen])
-                    if len(displayToId.keys()) == 1:
+                    if len(list(displayToId.keys())) == 1:
                         return order
-                print "---"
-                print "Current state:"
+                print("---")
+                print("Current state:")
                 for line in order:
                     for id, strand in line:
                         self.annotations[id].dump(2, strand, False)
-                    print
-                print "---"
+                    print()
+                print("---")
                 while True:
-                    chosen = raw_input("Do you want to append the next annotation to the same line?  Y[es]/N[o]/Q[uit]: ").lower()
+                    chosen = input("Do you want to append the next annotation to the same line?  Y[es]/N[o]/Q[uit]: ").lower()
                     if chosen not in ("y", "n", "q"):
-                        print "Please provide a valide answer: 'y', 'n' or 'q'."
+                        print("Please provide a valide answer: 'y', 'n' or 'q'.")
                     else:
                         if chosen == 'n':
                             order.append([])
@@ -190,7 +190,7 @@ class Annotations (object):
                             return order
                         break
             except ValueError:
-                print "Please type a valid number"
+                print("Please type a valid number")
 
     def dump (self, id = 0, offset = 0):
         annotation = self.annotations[id]
@@ -209,18 +209,32 @@ class FileParser (object):
                 if line and line[0] != "#":
                     splitLine = line.strip().split("\t", 9)
                     if len(splitLine) != 9:
-                        sys.exit("Error!  Line '%s' has not 9 fields.\n" % (l.strip()))
+                        sys.exit("Error!  Line '%s' does not have 9 fields.\n" % (l.strip()))
                     source  = splitLine[1]
                     type    = splitLine[2]
                     tags    = splitLine[8].split(";")
                     id      = None
                     parents = None
                     for tag in tags:
-                        key, value = tag.strip().split(keyValueSeparator, 1)
-                        if key == "ID":
-                            id = value
-                        elif key == "Parent":
-                            parents = value.split(",")
+                        if tag:
+                            tag = tag.strip()
+                            key, value = tag.strip().split(keyValueSeparator, 1)
+                            if key == "ID":
+                                id = value
+                            elif key == "gene_id" and type == "gene":
+                                id = value
+                            elif key == "transcript_id" and type == "transcript":
+                                id = value
+                            elif key == "exon_id" and type == "exon":
+                                id = value
+                            elif key == "Parent":
+                                parents = value.split(",")
+                            elif key == "gene_id" and type == "transcript":
+                                parents = value.split(",")
+                            elif key == "transcript_id" and type == "exon":
+                                parents = value.split(",")
+                            elif key == "transcript_id" and type == "CDS":
+                                parents = value.split(",")
                     yield source, type, id, parents
 
 class FileWriter (object):
@@ -252,4 +266,4 @@ if __name__ == "__main__":
     order    = annotations.orderList()
     fileWriter = FileWriter(parameters.outputFileName)
     fileWriter.write(annotations.annotations, exons, vicinity, order)
-    print "Done."
+    print("Done.")
