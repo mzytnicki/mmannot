@@ -1,4 +1,4 @@
-CC = g++
+CXX = g++
 CFLAGS = -Wpedantic -std=c++11 -pthread -lz
 LDFLAGS = 
 
@@ -17,10 +17,10 @@ endif
 all: addNH mmannot
 
 mmannot: mmannot.cpp
-	$(CC) mmannot.cpp $(LDFLAGS) $(CFLAGS) -o mmannot
+	$(CXX) mmannot.cpp $(LDFLAGS) $(CFLAGS) -o mmannot
 
 addNH: addNH.cpp
-	$(CC) addNH.cpp $(LDFLAGS) $(CFLAGS) -o addNH
+	$(CXX) addNH.cpp $(LDFLAGS) $(CFLAGS) -o addNH
 
 clean:
 	\rm -f mmannot addNH
