@@ -1,0 +1,22 @@
+Synonyms:
+mRNA:transcript
+five_prime_UTR:5'UTR
+three_prime_UTR:3'UTR
+Introns:
+araport11:gene
+Vicinity:
+araport11:gene
+Order:
+araport11:CDS +
+araport11:5'UTR +
+araport11:3'UTR +
+araport11:miRNA
+araport11:tRNA
+araport11:snoRNA
+araport11:snRNA
+araport11:rRNA
+araport11:transposable_element_gene
+araport11:pseudogenic_transcript
+araport11:gene -
+araport11:intron
+araport11:upstream,araport11:downstream
